@@ -6,7 +6,11 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "concurrently --kill-others-on-fail --names notes,site --prefix-colors cyan,green \"npm:notes:watch\" \"npm:dev:site\"",
+    "dev:site": "vinext dev",
+    "notes:sync": "node scripts/sync-notes.mjs",
+    "notes:watch": "node scripts/sync-notes.mjs --watch",
+    "prebuild": "npm run notes:sync",
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
@@ -30,6 +34,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
+    "concurrently": "^10.0.5",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",

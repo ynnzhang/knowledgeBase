@@ -8,14 +8,12 @@ import {
   AlertTriangle,
   BookOpen,
   CalendarClock,
-  CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock3,
   FileText,
+  Folder,
   FolderOpen,
-  Inbox,
-  ListFilter,
-  Menu,
   RefreshCcw,
   Search,
   Settings2,
@@ -64,6 +62,21 @@ type LocalDirectoryHandle = {
   kind: 'directory';
   name: string;
   values: () => AsyncIterableIterator<LocalFileHandle | LocalDirectoryHandle>;
+};
+
+type FolderNode = {
+  name: string;
+  path: string;
+  folders: Map<string, FolderNode>;
+  notes: Note[];
+};
+
+type NotesIndexPayload = {
+  root?: string;
+  rootName?: string;
+  generatedAt?: string;
+  error?: string | null;
+  notes?: Array<Omit<RawNote, 'modified'> & { modified: string }>;
 };
 
 const DAY = 86_400_000;
@@ -346,13 +359,6 @@ function formatDate(date?: Date) {
     : '未记录';
 }
 
-function freshnessText(note: Note) {
-  if (note.status === 'expired') return `已过期 ${Math.abs(note.daysUntilDue)} 天`;
-  if (note.status === 'stale') return `超期 ${Math.abs(note.daysUntilDue)} 天`;
-  if (note.status === 'soon') return `${Math.max(0, note.daysUntilDue)} 天后复查`;
-  return `${note.ageDays} 天前更新`;
-}
-
 async function readDirectory(handle: LocalDirectoryHandle, prefix = ''): Promise<RawNote[]> {
   const notes: RawNote[] = [];
   for await (const entry of handle.values()) {
@@ -379,20 +385,109 @@ function StatusBadge({ status }: { status: NoteStatus }) {
   return <span className={`status-badge ${meta.className}`}>{meta.label}</span>;
 }
 
+function buildFolderTree(notes: Note[]): FolderNode {
+  const root: FolderNode = { name: 'E:\\Note', path: '', folders: new Map(), notes: [] };
+
+  for (const note of notes) {
+    const parts = note.path.split('/').filter(Boolean);
+    let current = root;
+    for (const folderName of parts.slice(0, -1)) {
+      const folderPath = current.path ? `${current.path}/${folderName}` : folderName;
+      if (!current.folders.has(folderName)) {
+        current.folders.set(folderName, { name: folderName, path: folderPath, folders: new Map(), notes: [] });
+      }
+      current = current.folders.get(folderName)!;
+    }
+    current.notes.push(note);
+  }
+
+  return root;
+}
+
+function FileTree({
+  root,
+  expanded,
+  selectedId,
+  onToggle,
+  onSelect,
+}: {
+  root: FolderNode;
+  expanded: Set<string>;
+  selectedId?: string;
+  onToggle: (path: string) => void;
+  onSelect: (note: Note) => void;
+}) {
+  function countNotes(folder: FolderNode): number {
+    return folder.notes.length + [...folder.folders.values()].reduce((sum, child) => sum + countNotes(child), 0);
+  }
+
+  function renderFolder(folder: FolderNode, depth: number) {
+    const isOpen = expanded.has(folder.path);
+    const folders = [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    const files = [...folder.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    const itemCount = countNotes(folder);
+
+    return (
+      <div key={folder.path} className="tree-folder">
+        <button className="folder-row" onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18 }}>
+          <ChevronDown className={isOpen ? 'tree-chevron open' : 'tree-chevron'} size={14} />
+          {isOpen ? <FolderOpen size={17} /> : <Folder size={17} />}
+          <span>{folder.name}</span>
+          <em>{itemCount}</em>
+        </button>
+        {isOpen && (
+          <div>
+            {folders.map((child) => renderFolder(child, depth + 1))}
+            {files.map((note) => (
+              <button
+                key={note.id}
+                className={selectedId === note.id ? 'file-row selected' : 'file-row'}
+                onClick={() => onSelect(note)}
+                style={{ paddingLeft: 31 + depth * 18 }}
+              >
+                <FileText size={16} />
+                <span title={note.name}>{note.name}</span>
+                <small>{formatDate(note.baseline).replace(/\d{4}年/, '')}</small>
+                <StatusBadge status={note.status} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const rootFolders = [...root.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  const rootFiles = [...root.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+
+  return (
+    <div className="file-tree" role="tree" aria-label="E:\\Note 文件夹和笔记">
+      {rootFolders.map((folder) => renderFolder(folder, 0))}
+      {rootFiles.map((note) => (
+        <button key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'} onClick={() => onSelect(note)}>
+          <FileText size={16} /><span title={note.name}>{note.name}</span><small>{formatDate(note.baseline).replace(/\d{4}年/, '')}</small><StatusBadge status={note.status} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [rawNotes, setRawNotes] = useState<RawNote[]>(createDemoNotes);
   const [folderName, setFolderName] = useState('演示知识库');
   const [defaultInterval, setDefaultInterval] = useState(90);
   const [query, setQuery] = useState('');
   const [view, setView] = useState<ViewFilter>('all');
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState('demo-0');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('当前展示安全的示例笔记；选择文件夹后会切换到你的本地知识库。');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    () => new Set(['AI', 'Web', '方法论', '编程', '学习']),
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const lastSyncRef = useRef('');
 
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
@@ -403,6 +498,51 @@ export default function Home() {
     }
     window.addEventListener('keydown', focusSearch);
     return () => window.removeEventListener('keydown', focusSearch);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadLocalIndex() {
+      try {
+        const response = await fetch(`/notes-index.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = (await response.json()) as NotesIndexPayload;
+        if (!active || !payload.generatedAt || payload.generatedAt === lastSyncRef.current) return;
+        lastSyncRef.current = payload.generatedAt;
+
+        if (payload.error) {
+          setMessage(payload.error);
+          return;
+        }
+
+        if (!payload.notes?.length) {
+          setFolderName('E:\\Note（暂无笔记）');
+          setMessage('E:\\Note 中暂时没有 Markdown 文件，当前保留示例内容。');
+          return;
+        }
+
+        const nextNotes: RawNote[] = payload.notes.map((note) => ({
+          ...note,
+          modified: new Date(note.modified),
+          source: 'local',
+        }));
+        setRawNotes(nextNotes);
+        setFolderName(payload.root || 'E:\\Note');
+        setSelectedId((current) => nextNotes.some((note) => note.id === current) ? current : nextNotes[0].id);
+        setExpandedFolders(new Set(nextNotes.filter((note) => note.path.includes('/')).map((note) => note.path.split('/')[0])));
+        setMessage(`正在读取 ${payload.root || 'E:\\Note'}，共 ${nextNotes.length} 篇笔记；原文件保持不变。`);
+      } catch {
+        // 开发服务器首次启动时索引可能尚未生成，下一轮会自动重试。
+      }
+    }
+
+    void loadLocalIndex();
+    const timer = window.setInterval(() => void loadLocalIndex(), 4_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, []);
 
   const notes = useMemo(
@@ -420,12 +560,6 @@ export default function Home() {
     [notes],
   );
 
-  const tags = useMemo(() => {
-    const map = new Map<string, number>();
-    notes.forEach((note) => note.tags.forEach((tag) => map.set(tag, (map.get(tag) || 0) + 1)));
-    return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8);
-  }, [notes]);
-
   const filteredNotes = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
     const rank: Record<NoteStatus, number> = { expired: 0, stale: 1, soon: 2, fresh: 3 };
@@ -435,12 +569,13 @@ export default function Home() {
           view === 'all' ||
           (view === 'attention' && (note.status === 'expired' || note.status === 'stale')) ||
           note.status === view;
-        const matchesTag = !selectedTag || note.tags.includes(selectedTag);
         const haystack = `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN');
-        return matchesView && matchesTag && (!normalizedQuery || haystack.includes(normalizedQuery));
+        return matchesView && (!normalizedQuery || haystack.includes(normalizedQuery));
       })
       .sort((a, b) => rank[a.status] - rank[b.status] || b.baseline.getTime() - a.baseline.getTime());
-  }, [notes, query, selectedTag, view]);
+  }, [notes, query, view]);
+
+  const folderTree = useMemo(() => buildFolderTree(filteredNotes), [filteredNotes]);
 
   const selectedNote =
     filteredNotes.find((note) => note.id === selectedId) ||
@@ -474,7 +609,6 @@ export default function Home() {
       setFolderName(handle.name);
       setSelectedId(nextNotes[0].id);
       setView('all');
-      setSelectedTag(null);
       setMessage(`已在本地读取 ${nextNotes.length} 篇笔记。内容不会上传到服务器。`);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
@@ -516,17 +650,21 @@ export default function Home() {
 
   function selectView(nextView: ViewFilter) {
     setView(nextView);
-    setSelectedTag(null);
-    setSidebarOpen(false);
+  }
+
+  function toggleFolder(path: string) {
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   }
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-wrap">
-          <button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="打开导航">
-            <Menu size={20} />
-          </button>
           <div className="brand-mark" aria-hidden="true"><BookOpen size={20} strokeWidth={2.2} /></div>
           <div><div className="brand-name">知序</div><div className="brand-subtitle">让知识保持新鲜</div></div>
         </div>
@@ -555,58 +693,28 @@ export default function Home() {
       </header>
 
       <div className="workspace">
-        {sidebarOpen && <button className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="关闭导航" />}
-        <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
-          <div className="mobile-sidebar-head"><span>浏览知识库</span><button onClick={() => setSidebarOpen(false)} aria-label="关闭导航"><X size={20} /></button></div>
-
-          <div className="vault-card">
-            <div className="vault-icon"><Inbox size={18} /></div>
-            <div><span className="eyebrow">当前知识库</span><strong>{folderName}</strong></div>
-          </div>
-
-          <nav className="nav-section" aria-label="笔记状态">
-            <span className="section-label">笔记</span>
-            <button className={view === 'all' ? 'nav-item active' : 'nav-item'} onClick={() => selectView('all')}><FileText size={17} /><span>全部笔记</span><em>{counts.all}</em></button>
-            <button className={view === 'attention' ? 'nav-item active' : 'nav-item'} onClick={() => selectView('attention')}><AlertTriangle size={17} /><span>需要复查</span><em className="count-warn">{counts.attention}</em></button>
-            <button className={view === 'soon' ? 'nav-item active' : 'nav-item'} onClick={() => selectView('soon')}><CalendarClock size={17} /><span>即将到期</span><em>{counts.soon}</em></button>
-            <button className={view === 'fresh' ? 'nav-item active' : 'nav-item'} onClick={() => selectView('fresh')}><CheckCircle2 size={17} /><span>状态良好</span><em>{counts.fresh}</em></button>
-          </nav>
-
-          <div className="nav-section tags-section">
-            <span className="section-label">常用标签</span>
-            {tags.map(([tag, count]) => (
-              <button
-                key={tag}
-                className={selectedTag === tag ? 'tag-nav active' : 'tag-nav'}
-                onClick={() => { setSelectedTag(selectedTag === tag ? null : tag); setView('all'); }}
-              >
-                <span>#</span>{tag}<em>{count}</em>
-              </button>
-            ))}
-          </div>
-
-          <details className="settings-card">
-            <summary><Settings2 size={16} />时效性设置<ChevronRight size={15} /></summary>
-            <div className="settings-body">
-              <label htmlFor="review-interval">默认复查周期</label>
-              <select id="review-interval" value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))}>
-                <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
-              </select>
-              <p>单篇笔记可用 <code>review_interval_days</code> 覆盖。</p>
-            </div>
-          </details>
-        </aside>
-
         <main className="main-content">
           <section className="collection-panel">
             <div className="collection-head">
               <div>
-                <div className="breadcrumb"><span>{folderName}</span><ChevronRight size={13} /><span>{selectedTag ? `#${selectedTag}` : '知识概览'}</span></div>
-                <h1>{view === 'attention' ? '需要复查' : view === 'soon' ? '即将到期' : view === 'fresh' ? '状态良好' : '知识概览'}</h1>
-                <p>{view === 'all' ? '看见知识的状态，再决定今天复习什么。' : `共找到 ${filteredNotes.length} 篇笔记。`}</p>
+                <div className="breadcrumb"><span>{folderName}</span><ChevronRight size={13} /><span>文件</span></div>
+                <h1>{view === 'attention' ? '需要复查' : view === 'soon' ? '即将到期' : view === 'fresh' ? '状态良好' : 'E:\\Note'}</h1>
+                <p>{filteredNotes.length} 个 Markdown 文件</p>
               </div>
-              <button className="icon-button" aria-label="筛选笔记" title="当前列表已按状态筛选"><ListFilter size={18} /></button>
+              <label className="explorer-interval" title="没有单独设置复查周期时使用这个值">
+                <Settings2 size={14} />
+                <select value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))} aria-label="默认复查周期">
+                  <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
+                </select>
+              </label>
             </div>
+
+            <nav className="status-tabs" aria-label="按时效性筛选文件">
+              <button className={view === 'all' ? 'active' : ''} onClick={() => selectView('all')}>全部 <em>{counts.all}</em></button>
+              <button className={view === 'attention' ? 'active' : ''} onClick={() => selectView('attention')}>需复查 <em>{counts.attention}</em></button>
+              <button className={view === 'soon' ? 'active' : ''} onClick={() => selectView('soon')}>即将到期 <em>{counts.soon}</em></button>
+              <button className={view === 'fresh' ? 'active' : ''} onClick={() => selectView('fresh')}>良好 <em>{counts.fresh}</em></button>
+            </nav>
 
             {counts.attention > 0 && view === 'all' && (
               <button className="review-alert" onClick={() => selectView('attention')}>
@@ -616,25 +724,18 @@ export default function Home() {
               </button>
             )}
 
-            <div className="mini-stats">
-              <div><span className="stat-dot dot-coral" /><strong>{counts.attention}</strong><small>需复查</small></div>
-              <div><span className="stat-dot dot-gold" /><strong>{counts.soon}</strong><small>即将到期</small></div>
-              <div><span className="stat-dot dot-green" /><strong>{counts.fresh}</strong><small>状态良好</small></div>
-            </div>
+            <div className="list-heading"><span>名称</span><small>修改日期 · 状态</small></div>
 
-            <div className="list-heading"><span>{filteredNotes.length} 篇笔记</span><small>按复查优先级排序</small></div>
-
-            <div className="note-list" role="list">
-              {filteredNotes.map((note) => (
-                <button key={note.id} className={selectedNote?.id === note.id ? 'note-card selected' : 'note-card'} onClick={() => { setSelectedId(note.id); setMobileReaderOpen(true); }} role="listitem">
-                  <div className="note-card-top"><span className="note-folder">{note.folder}</span><StatusBadge status={note.status} /></div>
-                  <h2>{note.title}</h2>
-                  <p>{note.excerpt}</p>
-                  <div className="note-card-meta"><span><Clock3 size={13} />{freshnessText(note)}</span>{note.tags.slice(0, 2).map((tag) => <em key={tag}>#{tag}</em>)}</div>
-                </button>
-              ))}
+            <div className="note-list">
+              <FileTree
+                root={folderTree}
+                expanded={expandedFolders}
+                selectedId={selectedNote?.id}
+                onToggle={toggleFolder}
+                onSelect={(note) => { setSelectedId(note.id); setMobileReaderOpen(true); }}
+              />
               {!filteredNotes.length && (
-                <div className="empty-state"><Search size={24} /><strong>没有匹配的笔记</strong><span>换个关键词或清除筛选条件试试。</span><button onClick={() => { setQuery(''); setSelectedTag(null); setView('all'); }}>清除筛选</button></div>
+                <div className="empty-state"><Search size={24} /><strong>没有匹配的笔记</strong><span>换个关键词或清除筛选条件试试。</span><button onClick={() => { setQuery(''); setView('all'); }}>清除筛选</button></div>
               )}
             </div>
           </section>
