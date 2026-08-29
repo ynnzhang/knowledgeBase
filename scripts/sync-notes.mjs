@@ -13,16 +13,16 @@ function toWebPath(value) {
   return value.split(path.sep).join('/');
 }
 
-async function collectMarkdown(directory) {
+async function collectDirectory(directory, folders, notes) {
   const entries = await readdir(directory, { withFileTypes: true });
-  const notes = [];
 
   for (const entry of entries) {
     if (entry.isDirectory() && ignoredFolders.has(entry.name)) continue;
     const absolutePath = path.join(directory, entry.name);
 
     if (entry.isDirectory()) {
-      notes.push(...(await collectMarkdown(absolutePath)));
+      folders.push(toWebPath(path.relative(notesRoot, absolutePath)));
+      await collectDirectory(absolutePath, folders, notes);
       continue;
     }
 
@@ -46,16 +46,15 @@ async function collectMarkdown(directory) {
       console.warn(`[notes] 跳过无法读取的文件：${absolutePath}`, error.message);
     }
   }
-
-  return notes;
 }
 
 async function syncNotes() {
   let notes = [];
+  let folders = [];
   let error = null;
 
   try {
-    notes = await collectMarkdown(notesRoot);
+    await collectDirectory(notesRoot, folders, notes);
   } catch (syncError) {
     error = `无法读取 ${notesRoot}：${syncError.message}`;
   }
@@ -65,20 +64,20 @@ async function syncNotes() {
     rootName: path.basename(notesRoot),
     generatedAt: new Date().toISOString(),
     error,
+    folders,
     notes,
   };
 
   await writeFile(outputFile, JSON.stringify(payload), 'utf8');
   if (error) console.warn(`[notes] ${error}`);
-  else console.log(`[notes] 已从 ${notesRoot} 同步 ${notes.length} 篇 Markdown 笔记`);
+  else console.log(`[notes] 已从 ${notesRoot} 同步 ${folders.length} 个文件夹、${notes.length} 篇 Markdown 笔记`);
 }
 
 await syncNotes();
 
 if (watchMode) {
   let timer;
-  const watcher = watch(notesRoot, { recursive: true }, (_eventType, filename) => {
-    if (filename && !/\.md(?:own)?$/i.test(filename)) return;
+  const watcher = watch(notesRoot, { recursive: true }, () => {
     clearTimeout(timer);
     timer = setTimeout(() => void syncNotes(), 350);
   });

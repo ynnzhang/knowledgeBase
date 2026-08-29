@@ -1,6 +1,6 @@
 'use client';
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parse as parseYaml } from 'yaml';
@@ -32,7 +32,7 @@ type RawNote = {
   path: string;
   raw: string;
   modified: Date;
-  source: 'demo' | 'local';
+  source: 'local';
 };
 
 type Note = RawNote & {
@@ -52,18 +52,6 @@ type Note = RawNote & {
   wordCount: number;
 };
 
-type LocalFileHandle = {
-  kind: 'file';
-  name: string;
-  getFile: () => Promise<File>;
-};
-
-type LocalDirectoryHandle = {
-  kind: 'directory';
-  name: string;
-  values: () => AsyncIterableIterator<LocalFileHandle | LocalDirectoryHandle>;
-};
-
 type FolderNode = {
   name: string;
   path: string;
@@ -76,6 +64,7 @@ type NotesIndexPayload = {
   rootName?: string;
   generatedAt?: string;
   error?: string | null;
+  folders?: string[];
   notes?: Array<Omit<RawNote, 'modified'> & { modified: string }>;
 };
 
@@ -86,167 +75,6 @@ const STATUS_META: Record<NoteStatus, { label: string; className: string }> = {
   soon: { label: '即将到期', className: 'status-soon' },
   fresh: { label: '状态良好', className: 'status-fresh' },
 };
-
-function isoDaysAgo(days: number) {
-  return new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
-}
-
-function isoDaysFromNow(days: number) {
-  return new Date(Date.now() + days * DAY).toISOString().slice(0, 10);
-}
-
-function createDemoNotes(): RawNote[] {
-  const samples = [
-    {
-      name: 'RAG 检索质量评估.md',
-      path: 'AI/RAG 检索质量评估.md',
-      modifiedDays: 126,
-      raw: `---
-title: RAG 检索质量评估
-tags: [AI, RAG, 评估]
-updated: ${isoDaysAgo(126)}
-review_interval_days: 60
----
-
-# RAG 检索质量评估
-
-> 检索质量决定了生成答案的事实边界。评估时，应把“能否找回正确证据”和“答案是否忠实使用证据”拆开观察。
-
-## 核心指标
-
-| 层级 | 指标 | 关注点 |
-| --- | --- | --- |
-| 检索 | Recall@K | 相关文档是否进入候选集 |
-| 排序 | MRR / NDCG | 最有价值的证据是否足够靠前 |
-| 生成 | Faithfulness | 回答是否忠实使用检索上下文 |
-
-## 复查清单
-
-- [ ] 增加真实失败样本，而不只使用合成问题
-- [ ] 分开记录“没有召回”和“召回后未使用”
-- [ ] 针对长文档测试切块边界
-
-## 待确认
-
-当前评估集对多跳问题的覆盖仍然不足。`,
-    },
-    {
-      name: 'Cloudflare Workers 运行时差异.md',
-      path: 'Web/Cloudflare Workers 运行时差异.md',
-      modifiedDays: 45,
-      raw: `---
-title: Cloudflare Workers 运行时差异
-tags: [Web, Cloudflare, Runtime]
-updated: ${isoDaysAgo(45)}
-expires: ${isoDaysFromNow(-3)}
-review_interval_days: 30
----
-
-# Cloudflare Workers 运行时差异
-
-这是一份容易随平台更新而变化的运行时兼容性记录。
-
-## 当前结论
-
-- Worker 默认运行在 V8 isolate 中，不是传统的常驻 Node.js 进程。
-- 采用 Node.js API 前，应确认对应的兼容性标志和支持范围。
-- 文件系统、原始 TCP 连接等能力需要按部署环境重新确认。
-
-> 本笔记含明确有效期。继续使用前应对照官方文档重新核验。`,
-    },
-    {
-      name: '个人知识库维护原则.md',
-      path: '方法论/个人知识库维护原则.md',
-      modifiedDays: 74,
-      raw: `---
-title: 个人知识库维护原则
-tags: [知识管理, 方法论]
-reviewed: ${isoDaysAgo(74)}
-review_interval_days: 90
----
-
-# 个人知识库维护原则
-
-知识库的价值不在于收藏数量，而在于能够在需要时被找到、理解和更新。
-
-## 三条维护原则
-
-1. **一个主题，一个稳定入口。** 新资料优先补充到已有主题，而不是反复创建近似笔记。
-2. **把结论和来源放在一起。** 对可能变化的知识，记录更新时间与核验来源。
-3. **定期处理过期内容。** 过期不等于错误，它只是意味着需要重新建立信任。
-
-## 每周整理
-
-- 清空 Inbox 中可以归类的条目
-- 合并重复主题
-- 优先复查近期会用到的旧笔记`,
-    },
-    {
-      name: 'TypeScript 类型收窄.md',
-      path: '编程/TypeScript 类型收窄.md',
-      modifiedDays: 11,
-      raw: `---
-title: TypeScript 类型收窄
-tags: [TypeScript, 编程语言]
-reviewed: ${isoDaysAgo(11)}
-review_interval_days: 120
----
-
-# TypeScript 类型收窄
-
-类型收窄是 TypeScript 根据运行时检查，将联合类型推断为更具体类型的过程。
-
-## 常见方式
-
-\`typeof\`、\`instanceof\`、\`in\`、判别联合和用户自定义类型谓词都可以触发收窄。
-
-\`\`\`ts
-type Result =
-  | { ok: true; value: string }
-  | { ok: false; error: Error };
-
-function print(result: Result) {
-  if (result.ok) console.log(result.value);
-  else console.error(result.error.message);
-}
-\`\`\`
-
-判别字段比依赖对象形状更易读，也更容易穷尽检查。`,
-    },
-    {
-      name: '间隔复习的实践方式.md',
-      path: '学习/间隔复习的实践方式.md',
-      modifiedDays: 28,
-      raw: `---
-title: 间隔复习的实践方式
-tags: [学习方法, 记忆]
-updated: ${isoDaysAgo(28)}
-review_interval_days: 180
----
-
-# 间隔复习的实践方式
-
-与其在一次学习中反复阅读，不如把回忆分散到逐渐拉长的时间间隔中。
-
-## 实践建议
-
-- 用问题而不是长段摘要作为复习入口
-- 优先复习答错、迟疑或无法迁移应用的内容
-- 笔记变化后重新评估复习间隔
-
-复习的目标不是记住句子，而是能在新问题中调用核心模型。`,
-    },
-  ];
-
-  return samples.map((sample, index) => ({
-    id: `demo-${index}`,
-    name: sample.name,
-    path: sample.path,
-    raw: sample.raw,
-    modified: new Date(Date.now() - sample.modifiedDays * DAY),
-    source: 'demo' as const,
-  }));
-}
 
 function safeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -359,45 +187,32 @@ function formatDate(date?: Date) {
     : '未记录';
 }
 
-async function readDirectory(handle: LocalDirectoryHandle, prefix = ''): Promise<RawNote[]> {
-  const notes: RawNote[] = [];
-  for await (const entry of handle.values()) {
-    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.kind === 'directory') {
-      notes.push(...(await readDirectory(entry, path)));
-    } else if (/\.md(?:own)?$/i.test(entry.name)) {
-      const file = await entry.getFile();
-      notes.push({
-        id: `local-${path}`,
-        name: entry.name,
-        path,
-        raw: await file.text(),
-        modified: new Date(file.lastModified),
-        source: 'local',
-      });
-    }
-  }
-  return notes;
-}
-
 function StatusBadge({ status }: { status: NoteStatus }) {
   const meta = STATUS_META[status];
   return <span className={`status-badge ${meta.className}`}>{meta.label}</span>;
 }
 
-function buildFolderTree(notes: Note[]): FolderNode {
+function buildFolderTree(notes: Note[], folderPaths: string[]): FolderNode {
   const root: FolderNode = { name: 'E:\\Note', path: '', folders: new Map(), notes: [] };
 
-  for (const note of notes) {
-    const parts = note.path.split('/').filter(Boolean);
+  function ensureFolder(folderPath: string) {
+    const parts = folderPath.split('/').filter(Boolean);
     let current = root;
-    for (const folderName of parts.slice(0, -1)) {
-      const folderPath = current.path ? `${current.path}/${folderName}` : folderName;
+    for (const folderName of parts) {
+      const nextPath = current.path ? `${current.path}/${folderName}` : folderName;
       if (!current.folders.has(folderName)) {
-        current.folders.set(folderName, { name: folderName, path: folderPath, folders: new Map(), notes: [] });
+        current.folders.set(folderName, { name: folderName, path: nextPath, folders: new Map(), notes: [] });
       }
       current = current.folders.get(folderName)!;
     }
+    return current;
+  }
+
+  folderPaths.forEach(ensureFolder);
+
+  for (const note of notes) {
+    const parts = note.path.split('/').filter(Boolean);
+    const current = ensureFolder(parts.slice(0, -1).join('/'));
     current.notes.push(note);
   }
 
@@ -473,19 +288,16 @@ function FileTree({
 }
 
 export default function Home() {
-  const [rawNotes, setRawNotes] = useState<RawNote[]>(createDemoNotes);
-  const [folderName, setFolderName] = useState('演示知识库');
+  const [rawNotes, setRawNotes] = useState<RawNote[]>([]);
+  const [folderPaths, setFolderPaths] = useState<string[]>([]);
+  const [folderName, setFolderName] = useState('E:\\Note');
   const [defaultInterval, setDefaultInterval] = useState(90);
   const [query, setQuery] = useState('');
   const [view, setView] = useState<ViewFilter>('all');
-  const [selectedId, setSelectedId] = useState('demo-0');
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState('当前展示安全的示例笔记；选择文件夹后会切换到你的本地知识库。');
+  const [selectedId, setSelectedId] = useState('');
+  const [message, setMessage] = useState('正在读取 E:\\Note 的真实目录结构…');
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    () => new Set(['AI', 'Web', '方法论', '编程', '学习']),
-  );
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const lastSyncRef = useRef('');
 
@@ -516,22 +328,22 @@ export default function Home() {
           return;
         }
 
-        if (!payload.notes?.length) {
-          setFolderName('E:\\Note（暂无笔记）');
-          setMessage('E:\\Note 中暂时没有 Markdown 文件，当前保留示例内容。');
-          return;
-        }
-
-        const nextNotes: RawNote[] = payload.notes.map((note) => ({
+        const nextFolders = payload.folders || [];
+        const nextNotes: RawNote[] = (payload.notes || []).map((note) => ({
           ...note,
           modified: new Date(note.modified),
           source: 'local',
         }));
         setRawNotes(nextNotes);
+        setFolderPaths(nextFolders);
         setFolderName(payload.root || 'E:\\Note');
-        setSelectedId((current) => nextNotes.some((note) => note.id === current) ? current : nextNotes[0].id);
-        setExpandedFolders(new Set(nextNotes.filter((note) => note.path.includes('/')).map((note) => note.path.split('/')[0])));
-        setMessage(`正在读取 ${payload.root || 'E:\\Note'}，共 ${nextNotes.length} 篇笔记；原文件保持不变。`);
+        setSelectedId((current) => nextNotes.some((note) => note.id === current) ? current : nextNotes[0]?.id || '');
+        setExpandedFolders((current) => {
+          const available = new Set(nextFolders);
+          const preserved = [...current].filter((folder) => available.has(folder));
+          return new Set(preserved.length ? preserved : nextFolders.filter((folder) => !folder.includes('/')));
+        });
+        setMessage(`已读取 ${payload.root || 'E:\\Note'}：${nextFolders.length} 个文件夹、${nextNotes.length} 篇 Markdown 笔记。`);
       } catch {
         // 开发服务器首次启动时索引可能尚未生成，下一轮会自动重试。
       }
@@ -575,7 +387,7 @@ export default function Home() {
       .sort((a, b) => rank[a.status] - rank[b.status] || b.baseline.getTime() - a.baseline.getTime());
   }, [notes, query, view]);
 
-  const folderTree = useMemo(() => buildFolderTree(filteredNotes), [filteredNotes]);
+  const folderTree = useMemo(() => buildFolderTree(filteredNotes, folderPaths), [filteredNotes, folderPaths]);
 
   const selectedNote =
     filteredNotes.find((note) => note.id === selectedId) ||
@@ -584,69 +396,6 @@ export default function Home() {
   const oldestAttention = notes
     .filter((note) => note.status === 'expired' || note.status === 'stale')
     .sort((a, b) => b.ageDays - a.ageDays)[0];
-
-  async function openFolder() {
-    const picker = (
-      window as unknown as {
-        showDirectoryPicker?: (options?: { mode?: 'read' }) => Promise<LocalDirectoryHandle>;
-      }
-    ).showDirectoryPicker;
-
-    if (!picker) {
-      inputRef.current?.click();
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const handle = await picker.call(window, { mode: 'read' });
-      const nextNotes = await readDirectory(handle);
-      if (!nextNotes.length) {
-        setMessage('这个文件夹中没有找到 Markdown 笔记，请选择包含 .md 文件的目录。');
-        return;
-      }
-      setRawNotes(nextNotes);
-      setFolderName(handle.name);
-      setSelectedId(nextNotes[0].id);
-      setView('all');
-      setMessage(`已在本地读取 ${nextNotes.length} 篇笔记。内容不会上传到服务器。`);
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        setMessage('无法读取这个文件夹。请检查浏览器的文件访问权限后重试。');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadFromInput(event: ChangeEvent<HTMLInputElement>) {
-    const files = [...(event.target.files || [])].filter((file) => /\.md(?:own)?$/i.test(file.name));
-    if (!files.length) {
-      setMessage('选择的文件夹中没有 Markdown 笔记。');
-      return;
-    }
-    setLoading(true);
-    const nextNotes = await Promise.all(
-      files.map(async (file, index) => {
-        const path = file.webkitRelativePath || file.name;
-        return {
-          id: `upload-${path}-${index}`,
-          name: file.name,
-          path,
-          raw: await file.text(),
-          modified: new Date(file.lastModified),
-          source: 'local' as const,
-        };
-      }),
-    );
-    const rootName = nextNotes[0].path.split('/')[0] || '本地知识库';
-    setRawNotes(nextNotes);
-    setFolderName(rootName);
-    setSelectedId(nextNotes[0].id);
-    setMessage(`已在本地读取 ${nextNotes.length} 篇笔记。内容不会上传到服务器。`);
-    setLoading(false);
-    event.target.value = '';
-  }
 
   function selectView(nextView: ViewFilter) {
     setView(nextView);
@@ -677,18 +426,10 @@ export default function Home() {
 
         <div className="top-actions">
           <div className="privacy-pill" title="笔记只在当前浏览器中读取"><ShieldCheck size={15} /><span>仅本地读取</span></div>
-          <button className="primary-button" onClick={openFolder} disabled={loading}>
-            {loading ? <RefreshCcw className="spin" size={17} /> : <FolderOpen size={17} />}
-            {loading ? '正在读取' : '打开 E:\\Note'}
+          <button className="primary-button" onClick={() => window.location.reload()}>
+            <RefreshCcw size={17} />
+            刷新 E:\\Note
           </button>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            onChange={loadFromInput}
-            className="hidden-input"
-            {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-          />
         </div>
       </header>
 
@@ -735,7 +476,12 @@ export default function Home() {
                 onSelect={(note) => { setSelectedId(note.id); setMobileReaderOpen(true); }}
               />
               {!filteredNotes.length && (
-                <div className="empty-state"><Search size={24} /><strong>没有匹配的笔记</strong><span>换个关键词或清除筛选条件试试。</span><button onClick={() => { setQuery(''); setView('all'); }}>清除筛选</button></div>
+                <div className="empty-state">
+                  {notes.length ? <Search size={24} /> : <FolderOpen size={24} />}
+                  <strong>{notes.length ? '没有匹配的笔记' : 'E:\\Note 中没有 Markdown 笔记'}</strong>
+                  <span>{notes.length ? '换个关键词或清除筛选条件试试。' : '请直接在本地目录中创建 .md 文件，页面会自动更新。'}</span>
+                  {notes.length > 0 && <button onClick={() => { setQuery(''); setView('all'); }}>清除筛选</button>}
+                </div>
               )}
             </div>
           </section>
@@ -748,7 +494,7 @@ export default function Home() {
                   <div className="reader-path">{selectedNote.path.split('/').map((part, index, parts) => <span key={`${part}-${index}`}>{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>)}</div>
                   <div className="reader-title-row">
                     <div><StatusBadge status={selectedNote.status} /><h2>{selectedNote.title}</h2></div>
-                    <div className="reader-actions"><button title="重新从文件夹读取" onClick={openFolder} aria-label="重新读取知识库"><RefreshCcw size={17} /></button></div>
+                    <div className="reader-actions"><button title="重新读取 E:\\Note" onClick={() => window.location.reload()} aria-label="重新读取知识库"><RefreshCcw size={17} /></button></div>
                   </div>
                   <div className="reader-meta">
                     <span><Clock3 size={14} />最近核验：{formatDate(selectedNote.reviewed || selectedNote.updated)}</span>
@@ -789,7 +535,7 @@ export default function Home() {
                 </footer>
               </>
             ) : (
-              <div className="reader-empty"><BookOpen size={28} /><strong>选择一篇笔记开始阅读</strong></div>
+              <div className="reader-empty"><BookOpen size={28} /><strong>{notes.length ? '选择左侧文件开始阅读' : 'E:\\Note 中暂无可阅读的 Markdown 文件'}</strong></div>
             )}
           </section>
         </main>

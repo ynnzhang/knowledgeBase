@@ -69,7 +69,6 @@ button { color: inherit; }
 }
 .primary-button:hover { background: #195b4e; transform: translateY(-1px); }
 .primary-button:disabled { opacity: .65; cursor: progress; }
-.hidden-input { display: none; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
