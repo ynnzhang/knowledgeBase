@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +9,7 @@ import { parseDocument } from 'yaml';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const notesRoot = path.resolve(process.env.KNOWLEDGE_BASE_PATH || 'E:\\Note');
 const outputFile = path.join(projectRoot, 'public', 'notes-index.json');
+const outputAssetsRoot = path.join(projectRoot, 'public', 'note-assets');
 const watchMode = process.argv.includes('--watch');
 const localApiPort = Number(process.env.KNOWLEDGE_BASE_API_PORT || 4312);
 const ignoredFolders = new Set(['.git', '.obsidian', '.trash', 'node_modules']);
@@ -63,6 +64,20 @@ async function collectDirectory(directory, folders, notes) {
   }
 }
 
+async function copyAssetDirectories(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || ignoredFolders.has(entry.name)) continue;
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.name.endsWith('.assets')) {
+      const relativePath = path.relative(notesRoot, absolutePath);
+      await cp(absolutePath, path.join(outputAssetsRoot, relativePath), { recursive: true });
+    } else {
+      await copyAssetDirectories(absolutePath);
+    }
+  }
+}
+
 async function syncNotes() {
   let notes = [];
   let folders = [];
@@ -70,6 +85,13 @@ async function syncNotes() {
 
   try {
     await collectDirectory(notesRoot, folders, notes);
+    const generatedAssetsPath = path.relative(projectRoot, outputAssetsRoot);
+    if (generatedAssetsPath !== path.join('public', 'note-assets')) {
+      throw new Error('生成的图片目录无效。');
+    }
+    await rm(outputAssetsRoot, { recursive: true, force: true });
+    await mkdir(outputAssetsRoot, { recursive: true });
+    await copyAssetDirectories(notesRoot);
   } catch (syncError) {
     console.error(`无法读取知识库目录：${syncError.message}`);
     error = '无法读取知识库目录，请确认目录存在且可访问。';
