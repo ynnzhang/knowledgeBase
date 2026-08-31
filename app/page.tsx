@@ -1,30 +1,39 @@
 'use client';
+/* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import { parse as parseYaml } from 'yaml';
+import MarkdownRichEditor from './MarkdownRichEditor';
+import { resolveNoteImageUrl } from './note-images';
 import {
   AlertTriangle,
   BookOpen,
   CalendarClock,
   ChevronDown,
   ChevronRight,
-  Clock3,
   FileText,
   Folder,
   FolderOpen,
+  Check,
+  Eye,
+  Info,
+  Maximize2,
+  Pencil,
+  Plus,
   RefreshCcw,
+  Save,
   Search,
   Settings2,
   ShieldCheck,
-  Sparkles,
-  Tags,
+  Tag,
   X,
 } from 'lucide-react';
 
 type NoteStatus = 'expired' | 'stale' | 'soon' | 'fresh';
-type ViewFilter = 'all' | 'attention' | 'soon' | 'fresh';
+type ReaderMode = 'view' | 'edit';
 
 type RawNote = {
   id: string;
@@ -60,8 +69,6 @@ type FolderNode = {
 };
 
 type NotesIndexPayload = {
-  root?: string;
-  rootName?: string;
   generatedAt?: string;
   error?: string | null;
   folders?: string[];
@@ -69,12 +76,28 @@ type NotesIndexPayload = {
 };
 
 const DAY = 86_400_000;
-const STATUS_META: Record<NoteStatus, { label: string; className: string }> = {
-  expired: { label: '已过期', className: 'status-expired' },
-  stale: { label: '需复查', className: 'status-stale' },
-  soon: { label: '即将到期', className: 'status-soon' },
-  fresh: { label: '状态良好', className: 'status-fresh' },
+const READER_WIDTH_STORAGE_KEY = 'zhixu.reader-width';
+const READER_WIDTH_EVENT = 'zhixu-reader-width-change';
+const STATUS_META: Record<NoteStatus, string> = {
+  expired: '已过期',
+  stale: '需复查',
+  soon: '即将到期',
+  fresh: '状态良好',
 };
+
+function readReaderWidth() {
+  const savedWidth = Number(window.localStorage.getItem(READER_WIDTH_STORAGE_KEY));
+  return Number.isFinite(savedWidth) && savedWidth >= 480 && savedWidth <= 1600 ? savedWidth : 780;
+}
+
+function subscribeReaderWidth(callback: () => void) {
+  window.addEventListener('storage', callback);
+  window.addEventListener(READER_WIDTH_EVENT, callback);
+  return () => {
+    window.removeEventListener('storage', callback);
+    window.removeEventListener(READER_WIDTH_EVENT, callback);
+  };
+}
 
 function safeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -187,13 +210,113 @@ function formatDate(date?: Date) {
     : '未记录';
 }
 
-function StatusBadge({ status }: { status: NoteStatus }) {
-  const meta = STATUS_META[status];
-  return <span className={`status-badge ${meta.className}`}>{meta.label}</span>;
+function MetadataInfo({ note }: { note: Note }) {
+  return (
+    <span className="metadata-info" tabIndex={0} aria-label={`查看 ${note.title} 的笔记信息`}>
+      <Info size={14} aria-hidden="true" />
+      <span className="metadata-tooltip" role="tooltip">
+        <strong>笔记信息</strong>
+        <span><em>状态</em><b>{STATUS_META[note.status]}</b></span>
+        <span><em>标签</em><b>{note.tags.length ? note.tags.map((tag) => `#${tag}`).join(' · ') : '无标签'}</b></span>
+        <span><em>最近核验</em><b>{formatDate(note.reviewed || note.updated)}</b></span>
+        {note.expires && <span><em>有效期至</em><b>{formatDate(note.expires)}</b></span>}
+        <span><em>复查周期</em><b>{note.reviewInterval} 天</b></span>
+        <span><em>内容</em><b>约 {note.wordCount} 字</b></span>
+      </span>
+    </span>
+  );
+}
+
+function TagEditor({
+  note,
+  allTags,
+  onSave,
+}: {
+  note: Note;
+  allTags: string[];
+  onSave: (tags: string[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(note.tags);
+  const [input, setInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const suggestions = allTags.filter((tag) => !draft.includes(tag));
+
+  function addTag(value: string) {
+    const tag = value.trim().replace(/^#+/, '').slice(0, 32);
+    if (!tag || draft.includes(tag) || draft.length >= 20) return;
+    setDraft((current) => [...current, tag]);
+    setInput('');
+    setError('');
+  }
+
+  async function save() {
+    setSaving(true);
+    setError('');
+    try {
+      await onSave(draft);
+      setOpen(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '标签保存失败。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="tag-editor">
+      <button
+        className={open ? 'tag-editor-trigger active' : 'tag-editor-trigger'}
+        title="创建或管理标签"
+        aria-label="创建或管理标签"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Tag size={17} />
+        <Plus className="tag-plus" size={10} />
+      </button>
+      {open && (
+        <div className="tag-editor-panel">
+          <div className="tag-editor-head">
+            <div><strong>管理标签</strong><small>保存后写入 Markdown 元数据，AI 可直接读取</small></div>
+            <button onClick={() => setOpen(false)} aria-label="关闭标签编辑"><X size={15} /></button>
+          </div>
+
+          <div className="tag-drafts">
+            {draft.length ? draft.map((tag) => (
+              <span key={tag}>#{tag}<button onClick={() => setDraft((current) => current.filter((item) => item !== tag))} aria-label={`移除标签 ${tag}`}><X size={11} /></button></span>
+            )) : <small>还没有标签，输入一个新标签开始分类。</small>}
+          </div>
+
+          <div className="tag-input-row">
+            <input
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTag(input); } }}
+              placeholder="新标签，例如：前端、英语、算法"
+              maxLength={32}
+              autoFocus
+            />
+            <button onClick={() => addTag(input)} disabled={!input.trim()}><Plus size={15} />添加</button>
+          </div>
+
+          {suggestions.length > 0 && (
+            <div className="tag-suggestions"><small>已有标签</small><div>{suggestions.slice(0, 12).map((tag) => <button key={tag} onClick={() => addTag(tag)}>#{tag}</button>)}</div></div>
+          )}
+
+          {error && <p className="tag-error">{error}</p>}
+          <button className="tag-save" onClick={() => void save()} disabled={saving}>
+            <Check size={15} />{saving ? '正在保存…' : '保存标签'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function buildFolderTree(notes: Note[], folderPaths: string[]): FolderNode {
-  const root: FolderNode = { name: 'E:\\Note', path: '', folders: new Map(), notes: [] };
+  const root: FolderNode = { name: '知识库', path: '', folders: new Map(), notes: [] };
 
   function ensureFolder(folderPath: string) {
     const parts = folderPath.split('/').filter(Boolean);
@@ -254,17 +377,13 @@ function FileTree({
           <div>
             {folders.map((child) => renderFolder(child, depth + 1))}
             {files.map((note) => (
-              <button
-                key={note.id}
-                className={selectedId === note.id ? 'file-row selected' : 'file-row'}
-                onClick={() => onSelect(note)}
-                style={{ paddingLeft: 31 + depth * 18 }}
-              >
-                <FileText size={16} />
-                <span title={note.name}>{note.name}</span>
-                <small>{formatDate(note.baseline).replace(/\d{4}年/, '')}</small>
-                <StatusBadge status={note.status} />
-              </button>
+              <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
+                <button className="file-open" onClick={() => onSelect(note)} style={{ paddingLeft: 31 + depth * 18 }}>
+                  <FileText size={16} />
+                  <span title={note.name}>{note.name}</span>
+                </button>
+                <MetadataInfo note={note} />
+              </div>
             ))}
           </div>
         )}
@@ -276,12 +395,15 @@ function FileTree({
   const rootFiles = [...root.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
 
   return (
-    <div className="file-tree" role="tree" aria-label="E:\\Note 文件夹和笔记">
+    <div className="file-tree" role="tree" aria-label="知识库文件夹和笔记">
       {rootFolders.map((folder) => renderFolder(folder, 0))}
       {rootFiles.map((note) => (
-        <button key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'} onClick={() => onSelect(note)}>
-          <FileText size={16} /><span title={note.name}>{note.name}</span><small>{formatDate(note.baseline).replace(/\d{4}年/, '')}</small><StatusBadge status={note.status} />
-        </button>
+        <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
+          <button className="file-open" onClick={() => onSelect(note)}>
+            <FileText size={16} /><span title={note.name}>{note.name}</span>
+          </button>
+          <MetadataInfo note={note} />
+        </div>
       ))}
     </div>
   );
@@ -290,12 +412,15 @@ function FileTree({
 export default function Home() {
   const [rawNotes, setRawNotes] = useState<RawNote[]>([]);
   const [folderPaths, setFolderPaths] = useState<string[]>([]);
-  const [folderName, setFolderName] = useState('E:\\Note');
   const [defaultInterval, setDefaultInterval] = useState(90);
   const [query, setQuery] = useState('');
-  const [view, setView] = useState<ViewFilter>('all');
   const [selectedId, setSelectedId] = useState('');
-  const [message, setMessage] = useState('正在读取 E:\\Note 的真实目录结构…');
+  const [message, setMessage] = useState('正在读取本地知识库…');
+  const [readerMode, setReaderMode] = useState<ReaderMode>('view');
+  const readerWidth = useSyncExternalStore(subscribeReaderWidth, readReaderWidth, () => 780);
+  const [editorDrafts, setEditorDrafts] = useState<Record<string, string>>({});
+  const [savingNote, setSavingNote] = useState(false);
+  const [editorError, setEditorError] = useState('');
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
@@ -336,14 +461,13 @@ export default function Home() {
         }));
         setRawNotes(nextNotes);
         setFolderPaths(nextFolders);
-        setFolderName(payload.root || 'E:\\Note');
         setSelectedId((current) => nextNotes.some((note) => note.id === current) ? current : nextNotes[0]?.id || '');
         setExpandedFolders((current) => {
           const available = new Set(nextFolders);
           const preserved = [...current].filter((folder) => available.has(folder));
           return new Set(preserved.length ? preserved : nextFolders.filter((folder) => !folder.includes('/')));
         });
-        setMessage(`已读取 ${payload.root || 'E:\\Note'}：${nextFolders.length} 个文件夹、${nextNotes.length} 篇 Markdown 笔记。`);
+        setMessage(`知识库已更新：${nextFolders.length} 个文件夹、${nextNotes.length} 篇 Markdown 笔记。`);
       } catch {
         // 开发服务器首次启动时索引可能尚未生成，下一轮会自动重试。
       }
@@ -362,30 +486,27 @@ export default function Home() {
     [rawNotes, defaultInterval],
   );
 
+  const allTags = useMemo(
+    () => [...new Set(notes.flatMap((note) => note.tags))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    [notes],
+  );
+
   const counts = useMemo(
     () => ({
-      all: notes.length,
       attention: notes.filter((note) => note.status === 'expired' || note.status === 'stale').length,
       soon: notes.filter((note) => note.status === 'soon').length,
-      fresh: notes.filter((note) => note.status === 'fresh').length,
     }),
     [notes],
   );
 
   const filteredNotes = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
-    const rank: Record<NoteStatus, number> = { expired: 0, stale: 1, soon: 2, fresh: 3 };
     return notes
       .filter((note) => {
-        const matchesView =
-          view === 'all' ||
-          (view === 'attention' && (note.status === 'expired' || note.status === 'stale')) ||
-          note.status === view;
         const haystack = `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN');
-        return matchesView && (!normalizedQuery || haystack.includes(normalizedQuery));
-      })
-      .sort((a, b) => rank[a.status] - rank[b.status] || b.baseline.getTime() - a.baseline.getTime());
-  }, [notes, query, view]);
+        return !normalizedQuery || haystack.includes(normalizedQuery);
+      });
+  }, [notes, query]);
 
   const folderTree = useMemo(() => buildFolderTree(filteredNotes, folderPaths), [filteredNotes, folderPaths]);
 
@@ -393,13 +514,13 @@ export default function Home() {
     filteredNotes.find((note) => note.id === selectedId) ||
     filteredNotes[0] ||
     notes.find((note) => note.id === selectedId);
+  const editorBody = selectedNote
+    ? (editorDrafts[selectedNote.id] ?? selectedNote.body)
+    : '';
+  const editorDirty = Boolean(selectedNote && editorBody !== selectedNote.body);
   const oldestAttention = notes
     .filter((note) => note.status === 'expired' || note.status === 'stale')
     .sort((a, b) => b.ageDays - a.ageDays)[0];
-
-  function selectView(nextView: ViewFilter) {
-    setView(nextView);
-  }
 
   function toggleFolder(path: string) {
     setExpandedFolders((current) => {
@@ -410,12 +531,66 @@ export default function Home() {
     });
   }
 
+  function updateReaderWidth(nextWidth: number) {
+    const clampedWidth = Math.min(1600, Math.max(480, Math.round(nextWidth)));
+    window.localStorage.setItem(READER_WIDTH_STORAGE_KEY, String(clampedWidth));
+    window.dispatchEvent(new Event(READER_WIDTH_EVENT));
+  }
+
+  async function saveNoteTags(note: Note, tags: string[]) {
+    const response = await fetch('/local-api/notes/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: note.path, tags }),
+    });
+    const result = (await response.json()) as { error?: string; raw?: string; modified?: string; tags?: string[] };
+    if (!response.ok || !result.raw || !result.modified) {
+      throw new Error(result.error || '本地标签服务没有响应，请重新启动知识库网站。');
+    }
+
+    setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
+      ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+      : rawNote));
+    setMessage(`已保存 ${result.tags?.length || 0} 个标签到「${note.title}」。`);
+  }
+
+  async function saveNoteContent(note: Note, body: string) {
+    if (savingNote) return;
+    setSavingNote(true);
+    setEditorError('');
+    try {
+      const response = await fetch('/local-api/notes/content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: note.path, body }),
+      });
+      const result = (await response.json()) as { error?: string; raw?: string; modified?: string };
+      if (!response.ok || !result.raw || !result.modified) {
+        throw new Error(result.error || '本地编辑服务没有响应，请重新启动知识库网站。');
+      }
+
+      setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
+        ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+        : rawNote));
+      setEditorDrafts((current) => {
+        const next = { ...current };
+        delete next[note.id];
+        return next;
+      });
+      setMessage(`已保存「${note.title}」。`);
+    } catch (saveError) {
+      setEditorError(saveError instanceof Error ? saveError.message : '笔记保存失败。');
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-wrap">
           <div className="brand-mark" aria-hidden="true"><BookOpen size={20} strokeWidth={2.2} /></div>
-          <div><div className="brand-name">知序</div><div className="brand-subtitle">让知识保持新鲜</div></div>
+          <div><div className="brand-name">知序</div><div className="brand-subtitle">高效学习 · 快速整理</div></div>
         </div>
 
         <label className="search-box">
@@ -425,10 +600,9 @@ export default function Home() {
         </label>
 
         <div className="top-actions">
-          <div className="privacy-pill" title="笔记只在当前浏览器中读取"><ShieldCheck size={15} /><span>仅本地读取</span></div>
-          <button className="primary-button" onClick={() => window.location.reload()}>
+          <div className="privacy-pill" title="笔记数据只在本机处理"><ShieldCheck size={15} /><span>仅本地处理</span></div>
+          <button className="top-refresh-button" title="重新读取本地笔记" aria-label="重新读取本地笔记" onClick={() => window.location.reload()}>
             <RefreshCcw size={17} />
-            刷新 E:\\Note
           </button>
         </div>
       </header>
@@ -438,34 +612,35 @@ export default function Home() {
           <section className="collection-panel">
             <div className="collection-head">
               <div>
-                <div className="breadcrumb"><span>{folderName}</span><ChevronRight size={13} /><span>文件</span></div>
-                <h1>{view === 'attention' ? '需要复查' : view === 'soon' ? '即将到期' : view === 'fresh' ? '状态良好' : 'E:\\Note'}</h1>
+                <div className="breadcrumb"><span>知识库</span><ChevronRight size={13} /><span>文件</span></div>
+                <h1>我的笔记</h1>
                 <p>{filteredNotes.length} 个 Markdown 文件</p>
               </div>
-              <label className="explorer-interval" title="没有单独设置复查周期时使用这个值">
-                <Settings2 size={14} />
-                <select value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))} aria-label="默认复查周期">
-                  <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
-                </select>
-              </label>
+              <details className="review-settings">
+                <summary title="时效提醒设置" aria-label="时效提醒设置"><Settings2 size={15} /></summary>
+                <div className="review-settings-panel">
+                  <strong>时效提醒</strong>
+                  <label>默认复查周期
+                    <select value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))} aria-label="默认复查周期">
+                      <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
+                    </select>
+                  </label>
+                  <p>只用于没有单独设置复查周期的笔记。</p>
+                </div>
+              </details>
             </div>
 
-            <nav className="status-tabs" aria-label="按时效性筛选文件">
-              <button className={view === 'all' ? 'active' : ''} onClick={() => selectView('all')}>全部 <em>{counts.all}</em></button>
-              <button className={view === 'attention' ? 'active' : ''} onClick={() => selectView('attention')}>需复查 <em>{counts.attention}</em></button>
-              <button className={view === 'soon' ? 'active' : ''} onClick={() => selectView('soon')}>即将到期 <em>{counts.soon}</em></button>
-              <button className={view === 'fresh' ? 'active' : ''} onClick={() => selectView('fresh')}>良好 <em>{counts.fresh}</em></button>
-            </nav>
-
-            {counts.attention > 0 && view === 'all' && (
-              <button className="review-alert" onClick={() => selectView('attention')}>
-                <span className="alert-icon"><AlertTriangle size={18} /></span>
-                <span><strong>{counts.attention} 篇笔记需要重新确认</strong><small>最旧的一篇已有 {oldestAttention?.ageDays || 0} 天未复查</small></span>
-                <ChevronRight size={18} />
-              </button>
+            {(counts.attention > 0 || counts.soon > 0) && (
+              <div className="review-alert">
+                <CalendarClock size={15} />
+                <span>
+                  <strong>复查提醒</strong>
+                  <small>{counts.attention > 0 ? `${counts.attention} 篇需要复查` : ''}{counts.attention > 0 && counts.soon > 0 ? ' · ' : ''}{counts.soon > 0 ? `${counts.soon} 篇即将到期` : ''}{counts.attention > 0 ? ` · 最旧 ${oldestAttention?.ageDays || 0} 天` : ''}</small>
+                </span>
+              </div>
             )}
 
-            <div className="list-heading"><span>名称</span><small>修改日期 · 状态</small></div>
+            <div className="list-heading"><span>名称</span><small>信息</small></div>
 
             <div className="note-list">
               <FileTree
@@ -478,32 +653,82 @@ export default function Home() {
               {!filteredNotes.length && (
                 <div className="empty-state">
                   {notes.length ? <Search size={24} /> : <FolderOpen size={24} />}
-                  <strong>{notes.length ? '没有匹配的笔记' : 'E:\\Note 中没有 Markdown 笔记'}</strong>
+                  <strong>{notes.length ? '没有匹配的笔记' : '知识库中没有 Markdown 笔记'}</strong>
                   <span>{notes.length ? '换个关键词或清除筛选条件试试。' : '请直接在本地目录中创建 .md 文件，页面会自动更新。'}</span>
-                  {notes.length > 0 && <button onClick={() => { setQuery(''); setView('all'); }}>清除筛选</button>}
+                  {notes.length > 0 && <button onClick={() => setQuery('')}>清除筛选</button>}
                 </div>
               )}
             </div>
           </section>
 
-          <section className={`reader-panel ${mobileReaderOpen ? 'mobile-reader-open' : ''}`}>
+          <section
+            className={`reader-panel ${mobileReaderOpen ? 'mobile-reader-open' : ''}`}
+            style={{ '--reader-page-width': `${readerWidth}px` } as CSSProperties}
+          >
             {selectedNote ? (
               <>
                 <header className="reader-head">
                   <button className="mobile-reader-back" onClick={() => setMobileReaderOpen(false)} aria-label="返回笔记列表"><X size={18} />返回列表</button>
                   <div className="reader-path">{selectedNote.path.split('/').map((part, index, parts) => <span key={`${part}-${index}`}>{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>)}</div>
                   <div className="reader-title-row">
-                    <div><StatusBadge status={selectedNote.status} /><h2>{selectedNote.title}</h2></div>
-                    <div className="reader-actions"><button title="重新读取 E:\\Note" onClick={() => window.location.reload()} aria-label="重新读取知识库"><RefreshCcw size={17} /></button></div>
+                    <div><h2>{selectedNote.title}</h2></div>
+                    <div className="reader-actions">
+                      {readerMode === 'edit' && (
+                        <button
+                          className="reader-save-action"
+                          title={editorDirty ? '保存笔记（Ctrl+S）' : '笔记已保存'}
+                          onClick={() => void saveNoteContent(selectedNote, editorBody)}
+                          disabled={!editorDirty || savingNote}
+                          aria-label={savingNote ? '正在保存笔记' : '保存笔记'}
+                        >
+                          <Save size={17} />
+                        </button>
+                      )}
+                      <TagEditor key={selectedNote.id} note={selectedNote} allTags={allTags} onSave={(tags) => saveNoteTags(selectedNote, tags)} />
+                      <MetadataInfo note={selectedNote} />
+                      <button title="重新读取笔记" onClick={() => window.location.reload()} aria-label="重新读取知识库"><RefreshCcw size={17} /></button>
+                    </div>
                   </div>
-                  <div className="reader-meta">
-                    <span><Clock3 size={14} />最近核验：{formatDate(selectedNote.reviewed || selectedNote.updated)}</span>
-                    <span><FileText size={14} />约 {selectedNote.wordCount} 字</span>
-                    {selectedNote.tags.length > 0 && <span><Tags size={14} />{selectedNote.tags.join(' · ')}</span>}
+                  <div className="reader-workspace-controls">
+                    <div className="mode-switch" aria-label="笔记模式">
+                      <button className={readerMode === 'view' ? 'active' : ''} onClick={() => setReaderMode('view')}><Eye size={14} />查看</button>
+                      <button
+                        className={readerMode === 'edit' ? 'active' : ''}
+                        title="快捷输入：# 标题、- 无序列表、1. 有序列表、> 引用，输入后按空格"
+                        onClick={() => setReaderMode('edit')}
+                      ><Pencil size={14} />编辑{editorDirty && <i aria-label="有未保存修改" />}</button>
+                    </div>
+                    <div className="reader-width-control" title="拖动或输入数字调整笔记页宽">
+                      <Maximize2 size={14} />
+                      <input
+                        className="width-slider"
+                        type="range"
+                        min={480}
+                        max={1600}
+                        step={1}
+                        value={readerWidth}
+                        onChange={(event) => updateReaderWidth(Number(event.target.value))}
+                        aria-label="拖动调整笔记页宽"
+                      />
+                      <label className="width-number">
+                        <input
+                          type="number"
+                          min={480}
+                          max={1600}
+                          value={readerWidth}
+                          onChange={(event) => {
+                            const nextWidth = Number(event.target.value);
+                            if (Number.isFinite(nextWidth)) updateReaderWidth(nextWidth);
+                          }}
+                          aria-label="输入笔记页宽像素"
+                        />
+                        <span>px</span>
+                      </label>
+                    </div>
                   </div>
                 </header>
 
-                {(selectedNote.status === 'expired' || selectedNote.status === 'stale') && (
+                {readerMode === 'view' && (selectedNote.status === 'expired' || selectedNote.status === 'stale') && (
                   <div className={`stale-callout ${selectedNote.status === 'expired' ? 'expired-callout' : ''}`}>
                     <AlertTriangle size={19} />
                     <div>
@@ -513,29 +738,54 @@ export default function Home() {
                   </div>
                 )}
 
-                {selectedNote.status === 'soon' && (
+                {readerMode === 'view' && selectedNote.status === 'soon' && (
                   <div className="stale-callout soon-callout"><CalendarClock size={19} /><div><strong>即将进入复查周期</strong><p>建议在未来 {Math.max(0, selectedNote.daysUntilDue)} 天内重新确认这篇笔记。</p></div></div>
                 )}
 
-                <article className="markdown-body">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
-                      input: (props) => <input {...props} disabled={props.type === 'checkbox'} />,
+                {readerMode === 'view' ? (
+                  <article className="markdown-body">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeRaw]}
+                      urlTransform={(url, key) => key === 'src'
+                        ? resolveNoteImageUrl(selectedNote.path, url)
+                        : defaultUrlTransform(url)}
+                      components={{
+                        a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+                        img: ({ src, alt, ...props }) => <img {...props} src={src} alt={alt || ''} loading="lazy" />,
+                        input: (props) => <input {...props} disabled={props.type === 'checkbox'} />,
+                      }}
+                    >
+                      {editorBody}
+                    </ReactMarkdown>
+                  </article>
+                ) : (
+                  <section
+                    className="markdown-editor"
+                    aria-label={`编辑 ${selectedNote.title}`}
+                    onKeyDownCapture={(event) => {
+                      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                        event.preventDefault();
+                        void saveNoteContent(selectedNote, editorBody);
+                      }
                     }}
                   >
-                    {selectedNote.body}
-                  </ReactMarkdown>
-                </article>
+                    <MarkdownRichEditor
+                      key={selectedNote.id}
+                      markdown={editorBody}
+                      notePath={selectedNote.path}
+                      onChange={(nextMarkdown) => {
+                        setEditorDrafts((current) => ({ ...current, [selectedNote.id]: nextMarkdown }));
+                        setEditorError('');
+                      }}
+                    />
+                    {editorError && <p className="editor-error">{editorError}</p>}
+                  </section>
+                )}
 
-                <footer className="reader-footer">
-                  <div><Sparkles size={16} /><span>下次复查</span><strong>{selectedNote.daysUntilDue < 0 ? '现在' : `${selectedNote.daysUntilDue} 天后`}</strong></div>
-                  <p>建议复查后在 frontmatter 中更新 <code>reviewed</code> 日期。</p>
-                </footer>
               </>
             ) : (
-              <div className="reader-empty"><BookOpen size={28} /><strong>{notes.length ? '选择左侧文件开始阅读' : 'E:\\Note 中暂无可阅读的 Markdown 文件'}</strong></div>
+              <div className="reader-empty"><BookOpen size={28} /><strong>{notes.length ? '选择左侧文件开始阅读' : '知识库中暂无可阅读的 Markdown 文件'}</strong></div>
             )}
           </section>
         </main>

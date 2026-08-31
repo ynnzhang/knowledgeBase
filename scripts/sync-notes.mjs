@@ -1,13 +1,28 @@
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { watch } from 'node:fs';
+import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseDocument } from 'yaml';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const notesRoot = path.resolve(process.env.KNOWLEDGE_BASE_PATH || 'E:\\Note');
 const outputFile = path.join(projectRoot, 'public', 'notes-index.json');
 const watchMode = process.argv.includes('--watch');
+const localApiPort = Number(process.env.KNOWLEDGE_BASE_API_PORT || 4312);
 const ignoredFolders = new Set(['.git', '.obsidian', '.trash', 'node_modules']);
+const imageTypes = new Map([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+  ['image/avif', '.avif'],
+  ['image/bmp', '.bmp'],
+]);
+const imageMimeByExtension = new Map([...imageTypes].map(([mime, extension]) => [extension, mime]));
+imageMimeByExtension.set('.jpeg', 'image/jpeg');
+imageMimeByExtension.set('.svg', 'image/svg+xml');
 
 function toWebPath(value) {
   return value.split(path.sep).join('/');
@@ -17,7 +32,7 @@ async function collectDirectory(directory, folders, notes) {
   const entries = await readdir(directory, { withFileTypes: true });
 
   for (const entry of entries) {
-    if (entry.isDirectory() && ignoredFolders.has(entry.name)) continue;
+    if (entry.isDirectory() && (ignoredFolders.has(entry.name) || entry.name.endsWith('.assets'))) continue;
     const absolutePath = path.join(directory, entry.name);
 
     if (entry.isDirectory()) {
@@ -56,12 +71,11 @@ async function syncNotes() {
   try {
     await collectDirectory(notesRoot, folders, notes);
   } catch (syncError) {
-    error = `无法读取 ${notesRoot}：${syncError.message}`;
+    console.error(`无法读取知识库目录：${syncError.message}`);
+    error = '无法读取知识库目录，请确认目录存在且可访问。';
   }
 
   const payload = {
-    root: notesRoot,
-    rootName: path.basename(notesRoot),
     generatedAt: new Date().toISOString(),
     error,
     folders,
@@ -73,9 +87,200 @@ async function syncNotes() {
   else console.log(`[notes] 已从 ${notesRoot} 同步 ${folders.length} 个文件夹、${notes.length} 篇 Markdown 笔记`);
 }
 
+function resolveNotePath(relativePath) {
+  if (typeof relativePath !== 'string' || !/\.md(?:own)?$/i.test(relativePath)) {
+    throw new Error('笔记路径无效。');
+  }
+
+  const normalized = relativePath.replaceAll('\\', '/');
+  const absolutePath = path.resolve(notesRoot, normalized);
+  const relative = path.relative(notesRoot, absolutePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('笔记路径超出知识库范围。');
+  }
+  return absolutePath;
+}
+
+function staysInsideKnowledgeBase(absolutePath) {
+  const relative = path.relative(notesRoot, absolutePath);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function resolveImagePath(notePath, imageSource) {
+  const noteAbsolutePath = resolveNotePath(notePath);
+  if (typeof imageSource !== 'string' || !imageSource.trim()) throw new Error('图片路径无效。');
+  let source = imageSource.trim().replace(/^<|>$/g, '');
+  try { source = decodeURIComponent(source); } catch { /* 保留原始路径。 */ }
+  const sourceWithoutSuffix = source.split(/[?#]/, 1)[0];
+  const absolutePath = sourceWithoutSuffix.startsWith('/')
+    ? path.resolve(notesRoot, `.${sourceWithoutSuffix}`)
+    : path.resolve(path.dirname(noteAbsolutePath), sourceWithoutSuffix);
+  if (!staysInsideKnowledgeBase(absolutePath)) throw new Error('图片路径超出知识库范围。');
+  const extension = path.extname(absolutePath).toLowerCase();
+  if (!imageMimeByExtension.has(extension)) throw new Error('不支持的图片格式。');
+  return { absolutePath, contentType: imageMimeByExtension.get(extension) };
+}
+
+function normalizeTags(value) {
+  if (!Array.isArray(value)) throw new Error('标签格式无效。');
+  return [...new Set(value
+    .map((tag) => String(tag).trim().replace(/^#+/, ''))
+    .filter(Boolean))]
+    .slice(0, 20)
+    .map((tag) => tag.slice(0, 32));
+}
+
+function updateFrontmatterTags(raw, tags, fallbackUpdated) {
+  const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  const document = parseDocument(match?.[1] || '');
+  if (document.errors.length) throw new Error('笔记的 YAML 元数据格式有误，无法安全更新标签。');
+  if (!document.contents) document.contents = document.createNode({});
+
+  document.set('tags', tags);
+  const dateKeys = ['updated', 'last_updated', 'modified', 'date'];
+  if (!dateKeys.some((key) => document.has(key))) {
+    document.set('updated', fallbackUpdated.toISOString().slice(0, 10));
+  }
+
+  const body = match ? raw.slice(match[0].length) : raw;
+  return `---\n${document.toString().trimEnd()}\n---\n\n${body.replace(/^\r?\n/, '')}`;
+}
+
+function updateFrontmatterContent(raw, nextBody) {
+  if (typeof nextBody !== 'string') throw new Error('笔记正文格式无效。');
+  if (nextBody.length > 5_000_000) throw new Error('笔记正文过大，无法保存。');
+
+  const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  const document = parseDocument(match?.[1] || '');
+  if (document.errors.length) throw new Error('笔记的 YAML 元数据格式有误，无法安全保存正文。');
+  if (!document.contents) document.contents = document.createNode({});
+  document.set('updated', new Date().toISOString().slice(0, 10));
+
+  return `---\n${document.toString().trimEnd()}\n---\n\n${nextBody.replace(/^\r?\n/, '')}`;
+}
+
+async function readJsonBody(request) {
+  let body = '';
+  for await (const chunk of request) {
+    body += chunk;
+    if (body.length > 6_000_000) throw new Error('请求内容过大。');
+  }
+  return JSON.parse(body || '{}');
+}
+
+async function readBinaryBody(request) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > 20_000_000) throw new Error('图片不能超过 20 MB。');
+    chunks.push(chunk);
+  }
+  if (!length) throw new Error('没有收到图片内容。');
+  return Buffer.concat(chunks);
+}
+
+function sendJson(response, status, value) {
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  response.end(JSON.stringify(value));
+}
+
+function startLocalApi() {
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
+
+    if (request.method === 'GET' && requestUrl.pathname === '/health') {
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/assets') {
+      try {
+        const image = resolveImagePath(
+          requestUrl.searchParams.get('notePath'),
+          requestUrl.searchParams.get('src'),
+        );
+        const content = await readFile(image.absolutePath);
+        response.writeHead(200, {
+          'Content-Type': image.contentType,
+          'Content-Length': content.length,
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(content);
+      } catch (error) {
+        sendJson(response, 404, { error: error.message || '图片读取失败。' });
+      }
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/notes/images') {
+      try {
+        const notePath = requestUrl.searchParams.get('notePath');
+        const noteAbsolutePath = resolveNotePath(notePath);
+        const contentType = String(request.headers['content-type'] || '').split(';', 1)[0].toLowerCase();
+        const extension = imageTypes.get(contentType);
+        if (!extension) throw new Error('只支持 PNG、JPEG、GIF、WebP、AVIF 和 BMP 图片。');
+        const content = await readBinaryBody(request);
+        const noteBaseName = path.basename(noteAbsolutePath, path.extname(noteAbsolutePath));
+        const assetsFolderName = `${noteBaseName}.assets`;
+        const assetsDirectory = path.resolve(path.dirname(noteAbsolutePath), assetsFolderName);
+        if (!staysInsideKnowledgeBase(assetsDirectory)) throw new Error('图片目录超出知识库范围。');
+        await mkdir(assetsDirectory, { recursive: true });
+        const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+        const fileName = `image-${timestamp}-${randomUUID().slice(0, 8)}${extension}`;
+        await writeFile(path.join(assetsDirectory, fileName), content);
+        sendJson(response, 200, { url: `./${assetsFolderName}/${fileName}` });
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || '图片保存失败。' });
+      }
+      return;
+    }
+
+    if (request.method !== 'POST' || !['/notes/tags', '/notes/content'].includes(requestUrl.pathname)) {
+      sendJson(response, 404, { error: '未找到本地接口。' });
+      return;
+    }
+
+    try {
+      const input = await readJsonBody(request);
+      const absolutePath = resolveNotePath(input.path);
+      const [raw, fileInfo] = await Promise.all([readFile(absolutePath, 'utf8'), stat(absolutePath)]);
+      const isTagRequest = requestUrl.pathname === '/notes/tags';
+      const tags = isTagRequest ? normalizeTags(input.tags) : undefined;
+      const nextRaw = isTagRequest
+        ? updateFrontmatterTags(raw, tags, fileInfo.mtime)
+        : updateFrontmatterContent(raw, input.body);
+      await writeFile(absolutePath, nextRaw, 'utf8');
+      await syncNotes();
+      sendJson(response, 200, {
+        ok: true,
+        raw: nextRaw,
+        modified: new Date().toISOString(),
+        ...(tags ? { tags } : {}),
+      });
+    } catch (error) {
+      sendJson(response, 400, { error: error.message || '标签保存失败。' });
+    }
+  });
+
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') console.warn(`[notes] 编辑服务端口 ${localApiPort} 已被占用`);
+    else console.error('[notes] 编辑服务启动失败', error);
+  });
+  server.listen(localApiPort, '127.0.0.1', () => {
+    console.log(`[notes] 本地编辑服务已启动：http://127.0.0.1:${localApiPort}`);
+  });
+  return server;
+}
+
 await syncNotes();
 
 if (watchMode) {
+  const apiServer = startLocalApi();
   let timer;
   const watcher = watch(notesRoot, { recursive: true }, () => {
     clearTimeout(timer);
@@ -83,6 +288,6 @@ if (watchMode) {
   });
 
   console.log(`[notes] 正在监视 ${notesRoot}`);
-  process.on('SIGINT', () => watcher.close());
-  process.on('SIGTERM', () => watcher.close());
+  process.on('SIGINT', () => { watcher.close(); apiServer.close(); });
+  process.on('SIGTERM', () => { watcher.close(); apiServer.close(); });
 }

@@ -16,11 +16,16 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "@lexical/react": "^0.48.0",
+    "@mdxeditor/editor": "^4.2.3",
+    "@mdxeditor/gurx": "^1.2.4",
+    "lexical": "^0.48.0",
     "lucide-react": "^1.34.0",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-markdown": "^10.1.0",
+    "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
     "yaml": "^2.9.0"
   },
