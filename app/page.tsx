@@ -75,6 +75,10 @@ type NotesIndexPayload = {
   notes?: Array<Omit<RawNote, 'modified'> & { modified: string }>;
 };
 
+type NoteOverridePayload = {
+  overrides?: Array<{ path: string; raw: string; updated_at: string }>;
+};
+
 const DAY = 86_400_000;
 const READER_WIDTH_STORAGE_KEY = 'zhixu.reader-width';
 const READER_WIDTH_EVENT = 'zhixu-reader-width-change';
@@ -117,6 +121,15 @@ function parseFrontmatter(raw: string) {
   } catch {
     return { attributes: {}, body: raw };
   }
+}
+
+function replaceNoteBody(raw: string, body: string) {
+  const frontmatter = raw.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/)?.[0] || '';
+  return `${frontmatter}${body}`;
+}
+
+function isLocalWorkspace() {
+  return window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 }
 
 function firstValue(attributes: Record<string, unknown>, keys: string[]) {
@@ -425,6 +438,9 @@ export default function Home() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const lastSyncRef = useRef('');
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const pendingNoteSavesRef = useRef<Record<string, { note: Note; body: string }>>({});
+  const saveLoopRunningRef = useRef(false);
 
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
@@ -454,7 +470,23 @@ export default function Home() {
         }
 
         const nextFolders = payload.folders || [];
-        const nextNotes: RawNote[] = (payload.notes || []).map((note) => ({
+        let indexedNotes = payload.notes || [];
+        if (!isLocalWorkspace()) {
+          try {
+            const overrideResponse = await fetch('/api/note-overrides', { cache: 'no-store' });
+            if (overrideResponse.ok) {
+              const overridePayload = await overrideResponse.json() as NoteOverridePayload;
+              const overrides = new Map((overridePayload.overrides || []).map((override) => [override.path, override]));
+              indexedNotes = indexedNotes.map((note) => {
+                const override = overrides.get(note.path);
+                return override ? { ...note, raw: override.raw, modified: override.updated_at } : note;
+              });
+            }
+          } catch {
+            // 云端覆盖读取失败时仍展示构建时的笔记，下一轮同步会重试。
+          }
+        }
+        const nextNotes: RawNote[] = indexedNotes.map((note) => ({
           ...note,
           modified: new Date(note.modified),
           source: 'local',
@@ -479,6 +511,10 @@ export default function Home() {
       active = false;
       window.clearInterval(timer);
     };
+  }, []);
+
+  useEffect(() => () => {
+    if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
   }, []);
 
   const notes = useMemo(
@@ -554,35 +590,72 @@ export default function Home() {
     setMessage(`已保存 ${result.tags?.length || 0} 个标签到「${note.title}」。`);
   }
 
-  async function saveNoteContent(note: Note, body: string) {
-    if (savingNote) return;
+  async function persistNoteContent(note: Note, body: string) {
+    const localWorkspace = isLocalWorkspace();
+    const response = await fetch(localWorkspace ? '/local-api/notes/content' : '/api/note-overrides', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(localWorkspace
+        ? { path: note.path, body }
+        : { path: note.path, raw: replaceNoteBody(note.raw, body) }),
+    });
+    const result = (await response.json()) as { error?: string; raw?: string; modified?: string };
+    if (!response.ok || !result.raw || !result.modified) {
+      throw new Error(result.error || (localWorkspace
+        ? '本地编辑服务没有响应，请重新启动知识库网站。'
+        : '云端保存服务没有响应，请稍后重试。'));
+    }
+
+    setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
+      ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+      : rawNote));
+    setEditorDrafts((current) => {
+      if (current[note.id] !== body) return current;
+      const next = { ...current };
+      delete next[note.id];
+      return next;
+    });
+    setMessage(`已自动保存「${note.title}」。`);
+  }
+
+  async function flushPendingNoteSaves() {
+    if (saveLoopRunningRef.current) return;
+    saveLoopRunningRef.current = true;
     setSavingNote(true);
     setEditorError('');
     try {
-      const response = await fetch('/local-api/notes/content', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: note.path, body }),
-      });
-      const result = (await response.json()) as { error?: string; raw?: string; modified?: string };
-      if (!response.ok || !result.raw || !result.modified) {
-        throw new Error(result.error || '本地编辑服务没有响应，请重新启动知识库网站。');
+      while (true) {
+        const nextEntry = Object.entries(pendingNoteSavesRef.current)[0];
+        if (!nextEntry) break;
+        const [noteId, pendingSave] = nextEntry;
+        delete pendingNoteSavesRef.current[noteId];
+        await persistNoteContent(pendingSave.note, pendingSave.body);
       }
-
-      setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
-        ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
-        : rawNote));
-      setEditorDrafts((current) => {
-        const next = { ...current };
-        delete next[note.id];
-        return next;
-      });
-      setMessage(`已保存「${note.title}」。`);
     } catch (saveError) {
       setEditorError(saveError instanceof Error ? saveError.message : '笔记保存失败。');
     } finally {
+      saveLoopRunningRef.current = false;
       setSavingNote(false);
+      if (Object.keys(pendingNoteSavesRef.current).length) void flushPendingNoteSaves();
     }
+  }
+
+  function queueNoteSave(note: Note, body: string, delay = 0) {
+    pendingNoteSavesRef.current[note.id] = { note, body };
+    if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
+    if (delay > 0) {
+      autoSaveTimerRef.current = window.setTimeout(() => {
+        autoSaveTimerRef.current = null;
+        void flushPendingNoteSaves();
+      }, delay);
+    } else {
+      autoSaveTimerRef.current = null;
+      void flushPendingNoteSaves();
+    }
+  }
+
+  function saveNoteContent(note: Note, body: string) {
+    queueNoteSave(note, body);
   }
 
   return (
@@ -777,6 +850,7 @@ export default function Home() {
                       onChange={(nextMarkdown) => {
                         setEditorDrafts((current) => ({ ...current, [selectedNote.id]: nextMarkdown }));
                         setEditorError('');
+                        queueNoteSave(selectedNote, nextMarkdown, 600);
                       }}
                     />
                     {editorError && <p className="editor-error">{editorError}</p>}
