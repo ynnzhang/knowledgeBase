@@ -268,14 +268,15 @@ button { color: inherit; }
 .zhixu-rich-content table { width: 100%; border-collapse: collapse; font-family: Inter, "Microsoft YaHei", sans-serif; font-size: 10px; }
 .zhixu-rich-content th, .zhixu-rich-content td { border: 1px solid #dfe6e2; padding: 8px 10px; }
 .zhixu-rich-content th { background: #f3f6f3; }
-.zhixu-rich-content [data-editor-block-type="image"], .zhixu-rich-content [data-editor-block-type="image"] > div { max-width: 100%; }
+.zhixu-rich-content [data-editor-block-type="image"] { width: fit-content; max-width: 100%; display: block; margin-inline: auto; }
+.zhixu-rich-content [data-editor-block-type="image"] > div { max-width: 100%; }
 .zhixu-rich-content img { max-width: 100%; height: auto; display: block; margin: 22px auto; border-radius: 9px; object-fit: contain; box-shadow: 0 8px 24px rgba(24, 49, 45, .08); transition: width .12s ease; }
 .zhixu-rich-content img.image-align-left { margin-left: 0; margin-right: auto; }
 .zhixu-rich-content img.image-align-center { margin-left: auto; margin-right: auto; }
 .zhixu-rich-content img.image-align-right { margin-left: auto; margin-right: 0; }
-.zhixu-rich-content p:has(> [data-editor-block-type="image"] img.image-align-left) { text-align: left; }
-.zhixu-rich-content p:has(> [data-editor-block-type="image"] img.image-align-center) { text-align: center; }
-.zhixu-rich-content p:has(> [data-editor-block-type="image"] img.image-align-right) { text-align: right; }
+.zhixu-rich-content [data-editor-block-type="image"]:has(img.image-align-left) { margin-left: 0; margin-right: auto; }
+.zhixu-rich-content [data-editor-block-type="image"]:has(img.image-align-center) { margin-left: auto; margin-right: auto; }
+.zhixu-rich-content [data-editor-block-type="image"]:has(img.image-align-right) { margin-left: auto; margin-right: 0; }
 .image-edit-toolbar { position: absolute; z-index: 4; top: 8px; right: 8px; display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid rgba(214, 226, 220, .95); border-radius: 9px; background: rgba(255, 255, 255, .96); box-shadow: 0 8px 22px rgba(24, 49, 45, .16); backdrop-filter: blur(8px); }
 .image-align-group { display: flex; align-items: center; gap: 2px; }
 .image-edit-toolbar button { width: 29px; height: 29px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #647872; cursor: pointer; }
