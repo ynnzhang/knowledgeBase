@@ -3,6 +3,7 @@ import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
 import { defineConfig } from 'vite';
 import hostingConfig from './.openai/hosting.json';
+import { localApiPort } from './scripts/local-config.mjs';
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   '00000000-0000-4000-8000-000000000000';
@@ -47,12 +48,15 @@ export default defineConfig(async () => {
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
+      host: 'localhost',
+      port: 3000,
+      strictPort: true,
       ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
       proxy: {
         '/local-api': {
-          target: 'http://127.0.0.1:4312',
+          target: `http://127.0.0.1:${localApiPort}`,
           changeOrigin: true,
-          rewrite: (requestPath) => requestPath.replace(/^\/local-api/, ''),
+          rewrite: (requestPath: string) => requestPath.replace(/^\/local-api/, ''),
         },
       },
     },

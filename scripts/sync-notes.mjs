@@ -3,16 +3,15 @@ import { watch } from 'node:fs';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseDocument } from 'yaml';
+import { projectRoot, notesRoot, localApiPort, usesDefaultNotesRoot } from './local-config.mjs';
+import { createFeishuSync, allowFeishuRequest } from './feishu-sync.mjs';
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const notesRoot = path.resolve(process.env.KNOWLEDGE_BASE_PATH || 'E:\\Note');
 const outputFile = path.join(projectRoot, 'public', 'notes-index.json');
 const outputAssetsRoot = path.join(projectRoot, 'public', 'note-assets');
 const watchMode = process.argv.includes('--watch');
-const localApiPort = Number(process.env.KNOWLEDGE_BASE_API_PORT || 4312);
-const ignoredFolders = new Set(['.git', '.obsidian', '.trash', 'node_modules']);
+const ignoredFolders = new Set(['.git', '.obsidian', '.trash', '.zhixu-feishu', 'node_modules']);
+const feishu = createFeishuSync({ projectRoot, notesRoot });
 const imageTypes = new Map([
   ['image/png', '.png'],
   ['image/jpeg', '.jpg'],
@@ -84,6 +83,7 @@ async function syncNotes() {
   let error = null;
 
   try {
+    if (usesDefaultNotesRoot && process.platform !== 'win32') await mkdir(notesRoot, { recursive: true });
     await collectDirectory(notesRoot, folders, notes);
     const generatedAssetsPath = path.relative(projectRoot, outputAssetsRoot);
     if (generatedAssetsPath !== path.join('public', 'note-assets')) {
@@ -94,7 +94,7 @@ async function syncNotes() {
     await copyAssetDirectories(notesRoot);
   } catch (syncError) {
     console.error(`无法读取知识库目录：${syncError.message}`);
-    error = '无法读取知识库目录，请确认目录存在且可访问。';
+    error = `无法读取知识库目录：${notesRoot}。请确认目录存在且可访问，或在 .env.local 中设置 KNOWLEDGE_BASE_PATH。`;
   }
 
   const payload = {
@@ -107,6 +107,7 @@ async function syncNotes() {
   await writeFile(outputFile, JSON.stringify(payload), 'utf8');
   if (error) console.warn(`[notes] ${error}`);
   else console.log(`[notes] 已从 ${notesRoot} 同步 ${folders.length} 个文件夹、${notes.length} 篇 Markdown 笔记`);
+  return !error;
 }
 
 function resolveNotePath(relativePath) {
@@ -133,6 +134,7 @@ function resolveImagePath(notePath, imageSource) {
   if (typeof imageSource !== 'string' || !imageSource.trim()) throw new Error('图片路径无效。');
   let source = imageSource.trim().replace(/^<|>$/g, '');
   try { source = decodeURIComponent(source); } catch { /* 保留原始路径。 */ }
+  source = source.replaceAll('\\', '/');
   const sourceWithoutSuffix = source.split(/[?#]/, 1)[0];
   const absolutePath = sourceWithoutSuffix.startsWith('/')
     ? path.resolve(notesRoot, `.${sourceWithoutSuffix}`)
@@ -214,8 +216,28 @@ function startLocalApi() {
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
 
+    if (requestUrl.pathname.startsWith('/feishu/')) {
+      if (!allowFeishuRequest(request, localApiPort)) {
+        sendJson(response, 403, { error: '飞书同步只允许从本机知识库访问。' });
+        return;
+      }
+      try {
+        if (request.method === 'GET' && requestUrl.pathname === '/feishu/status') {
+          sendJson(response, 200, await feishu.status(requestUrl.searchParams.get('path')));
+        } else if (request.method === 'POST' && requestUrl.pathname === '/feishu/config') {
+          sendJson(response, 200, await feishu.saveConfig(await readJsonBody(request)));
+        } else if (request.method === 'POST' && requestUrl.pathname === '/feishu/jobs') {
+          const input = await readJsonBody(request);
+          sendJson(response, 202, await feishu.start(input.action, input.path, input.copy === true));
+        } else sendJson(response, 404, { error: '未找到飞书接口。' });
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || '飞书操作失败。' });
+      }
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/health') {
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true, service: 'zhixu-notes', projectRoot, notesRoot });
       return;
     }
 
@@ -269,6 +291,7 @@ function startLocalApi() {
 
     try {
       const input = await readJsonBody(request);
+      if (feishu.busy) throw new Error('飞书同步正在进行，请完成后保存笔记。');
       const absolutePath = resolveNotePath(input.path);
       const [raw, fileInfo] = await Promise.all([readFile(absolutePath, 'utf8'), stat(absolutePath)]);
       const isTagRequest = requestUrl.pathname === '/notes/tags';
@@ -292,6 +315,7 @@ function startLocalApi() {
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') console.warn(`[notes] 编辑服务端口 ${localApiPort} 已被占用`);
     else console.error('[notes] 编辑服务启动失败', error);
+    process.exit(1);
   });
   server.listen(localApiPort, '127.0.0.1', () => {
     console.log(`[notes] 本地编辑服务已启动：http://127.0.0.1:${localApiPort}`);
@@ -299,9 +323,11 @@ function startLocalApi() {
   return server;
 }
 
-await syncNotes();
+const initialSyncSucceeded = await syncNotes();
 
-if (watchMode) {
+if (watchMode && !initialSyncSucceeded) process.exitCode = 1;
+
+if (watchMode && initialSyncSucceeded) {
   const apiServer = startLocalApi();
   let timer;
   const watcher = watch(notesRoot, { recursive: true }, () => {

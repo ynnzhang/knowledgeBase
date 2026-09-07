@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type FC } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { usePublisher } from '@mdxeditor/gurx';
-import { $createParagraphNode, $getNodeByKey } from 'lexical';
+import { $createParagraphNode, $getNodeByKey, $isElementNode } from 'lexical';
 import type { Html } from 'mdast';
 import { AlignCenter, AlignLeft, AlignRight, Settings2, Trash2 } from 'lucide-react';
 import {
@@ -93,6 +93,7 @@ const alignedHtmlImageVisitor: MdastImportVisitor<Html> = {
   priority: 100,
   testNode: (node) => node.type === 'html' && node.value.trimStart().startsWith('<img'),
   visitNode: ({ mdastNode, lexicalParent }) => {
+    if (!$isElementNode(lexicalParent)) throw new Error('图片必须插入到可包含子节点的元素中。');
     const wrapper = document.createElement('div');
     wrapper.innerHTML = mdastNode.value;
     const imageElement = wrapper.querySelector('img');

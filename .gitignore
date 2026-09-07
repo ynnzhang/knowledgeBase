@@ -28,6 +28,7 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
 
 # deployment and generated files
 .vercel
@@ -39,3 +40,5 @@ next-env.d.ts
 /tsconfig.tsbuildinfo
 /public/notes-index.json
 /public/note-assets/
+/.feishu-local.json
+/.feishu-local.json.*.tmp

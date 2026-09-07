@@ -10,6 +10,8 @@
     "dev:site": "vinext dev",
     "notes:sync": "node scripts/sync-notes.mjs",
     "notes:watch": "node scripts/sync-notes.mjs --watch",
+    "test:local": "node --test scripts/local-notes.test.mjs",
+    "test:feishu": "node --test scripts/feishu-sync.test.mjs",
     "prebuild": "npm run notes:sync",
     "build": "vinext build",
     "start": "vinext start",

@@ -7,6 +7,7 @@ import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import { parse as parseYaml } from 'yaml';
 import MarkdownRichEditor from './MarkdownRichEditor';
+import FeishuSyncPanel from './FeishuSyncPanel';
 import { resolveNoteImageUrl } from './note-images';
 import {
   AlertTriangle,
@@ -34,6 +35,11 @@ import {
 
 type NoteStatus = 'expired' | 'stale' | 'soon' | 'fresh';
 type ReaderMode = 'view' | 'edit';
+
+// The platform does not change during a browser session.
+function subscribePlatform() {
+  return () => {};
+}
 
 type RawNote = {
   id: string;
@@ -423,6 +429,11 @@ function FileTree({
 }
 
 export default function Home() {
+  const shortcutModifier = useSyncExternalStore(
+    subscribePlatform,
+    () => /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? '⌘' : 'Ctrl',
+    () => 'Ctrl',
+  );
   const [rawNotes, setRawNotes] = useState<RawNote[]>([]);
   const [folderPaths, setFolderPaths] = useState<string[]>([]);
   const [defaultInterval, setDefaultInterval] = useState(90);
@@ -433,6 +444,7 @@ export default function Home() {
   const readerWidth = useSyncExternalStore(subscribeReaderWidth, readReaderWidth, () => 780);
   const [editorDrafts, setEditorDrafts] = useState<Record<string, string>>({});
   const [savingNote, setSavingNote] = useState(false);
+  const [feishuBusy, setFeishuBusy] = useState(false);
   const [editorError, setEditorError] = useState('');
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
@@ -669,11 +681,12 @@ export default function Home() {
         <label className="search-box">
           <Search size={17} aria-hidden="true" />
           <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、正文或标签…" aria-label="搜索笔记" />
-          <kbd>Ctrl K</kbd>
+          <kbd>{shortcutModifier} K</kbd>
         </label>
 
         <div className="top-actions">
-          <div className="privacy-pill" title="笔记数据只在本机处理"><ShieldCheck size={15} /><span>仅本地处理</span></div>
+          <FeishuSyncPanel notePath={selectedNote?.path} dirty={editorDirty || savingNote || Object.keys(editorDrafts).length > 0} onBusyChange={setFeishuBusy} />
+          <div className="privacy-pill" title="笔记保存在本机，点击飞书同步时传输所选内容"><ShieldCheck size={15} /><span>本地存储</span></div>
           <button className="top-refresh-button" title="重新读取本地笔记" aria-label="重新读取本地笔记" onClick={() => window.location.reload()}>
             <RefreshCcw size={17} />
           </button>
@@ -749,9 +762,9 @@ export default function Home() {
                       {readerMode === 'edit' && (
                         <button
                           className="reader-save-action"
-                          title={editorDirty ? '保存笔记（Ctrl+S）' : '笔记已保存'}
+                          title={editorDirty ? `保存笔记（${shortcutModifier}+S）` : '笔记已保存'}
                           onClick={() => void saveNoteContent(selectedNote, editorBody)}
-                          disabled={!editorDirty || savingNote}
+                          disabled={!editorDirty || savingNote || feishuBusy}
                           aria-label={savingNote ? '正在保存笔记' : '保存笔记'}
                         >
                           <Save size={17} />
