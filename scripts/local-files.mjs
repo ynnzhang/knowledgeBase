@@ -1,4 +1,5 @@
-import { stat, lstat, mkdir, readFile, readdir, rename, open, unlink, writeFile } from 'node:fs/promises';
+import { stat, lstat, mkdir, readFile, readdir, rename, open, unlink, writeFile, copyFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { fromMarkdown } from 'mdast-util-from-markdown';
@@ -148,6 +149,43 @@ export function createLocalFiles({ notesRoot }) {
     return { changed: changes.length, backup };
   }
 
+  async function deleteNote(input) {
+    if (input.confirmed !== true) throw new Error('请先确认删除笔记。');
+    const source = input.path;
+    if (typeof source !== 'string' || !/\.md(?:own)?$/i.test(source) || path.posix.normalize(source) !== source) throw new Error('请选择要删除的 Markdown 笔记。');
+    const file = await safe(source);
+    if (!(await lstat(file)).isFile()) throw new Error('只能删除笔记文件，请刷新后重试。');
+    const stateFile = await safe('.zhixu-feishu/state.json', { missing: true, privatePath: true });
+    const stateRaw = await exists(stateFile) ? await readFile(stateFile, 'utf8') : null;
+    const state = stateRaw ? JSON.parse(stateRaw) : null;
+    if (state && (state.version !== 1 || !Array.isArray(state.entries))) throw new Error('飞书同步记录格式异常，已停止删除。');
+    const entries = state?.entries.filter((entry) => entry.path === source) || [];
+    if (entries.some((entry) => entry.pending || entry.pendingMove)) throw new Error('这篇笔记有未完成的飞书操作，请先恢复同步后再删除。');
+    const trashRoot = await safe('.trash', { missing: true, privatePath: true });
+    await mkdir(trashRoot, { recursive: true });
+    const backup = `.trash/${randomUUID()}`;
+    const directory = path.join(notesRoot, backup);
+    await mkdir(directory);
+    const trashPath = `${backup}/${path.posix.basename(source)}`;
+    const trashFile = path.join(notesRoot, trashPath);
+    await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ path: source, deletedAt: new Date().toISOString(), entries, stateRaw }, null, 2), { flag: 'wx', mode: 0o600 });
+    await rename(file, trashFile);
+    const temp = `${stateFile}.${randomUUID()}.tmp`;
+    try {
+      if (entries.length) {
+        state.entries = state.entries.filter((entry) => entry.path !== source);
+        await writeFile(temp, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
+        await rename(temp, stateFile);
+      }
+    } catch (error) {
+      // Never overwrite a file recreated by another program during rollback.
+      try { await copyFile(trashFile, file, constants.COPYFILE_EXCL); await unlink(trashFile); }
+      catch { throw new Error(`删除中断，原始笔记保留在：${trashPath}`); }
+      throw error;
+    } finally { await unlink(temp).catch(() => {}); }
+    return { path: source, trashPath, backup };
+  }
+
   async function checkDirectory(directory) {
     for (const item of await readdir(directory, { withFileTypes: true })) {
       if (item.isSymbolicLink()) throw new Error('文件夹包含符号链接，请先移除链接再移动。');
@@ -276,6 +314,7 @@ export function createLocalFiles({ notesRoot }) {
         try { lock = await open(lockPath, 'wx', 0o600); }
         catch (error) { if (error.code === 'EEXIST') throw new Error('知识库正在同步或移动，请完成后重试。'); throw error; }
         if (['rename-tag', 'delete-tag'].includes(input.action)) return await manageTags(input);
+        if (input.action === 'delete-note') return await deleteNote(input);
         const folder = input.folder || '';
         const folderFile = await safe(folder);
         if (!(await lstat(folderFile)).isDirectory()) throw new Error('请选择目标文件夹。');

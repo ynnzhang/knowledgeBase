@@ -134,6 +134,17 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   assert.equal(renamedFolderResponse.status, 200);
   assert.ok((await renamedFolderResponse.json()).index.notes.some((note) => note.path === '已整理/整理笔记.md'));
 
+  const deletion = { action: 'delete-note', path: '已整理/整理笔记.md', confirmed: true };
+  assert.equal((await manage(deletion, 'https://example.com')).status, 403);
+  assert.equal((await manage({ ...deletion, confirmed: false })).status, 400);
+  const deleted = await manage(deletion);
+  assert.equal(deleted.status, 200);
+  const deletedResult = await deleted.json();
+  assert.ok(!deletedResult.index.notes.some((note) => note.path === deletion.path || note.path.startsWith('.trash/')));
+  assert.ok(!deletedResult.index.folders.some((folder) => folder.startsWith('.trash')));
+  assert.match(await readFile(path.join(vault, deletedResult.trashPath), 'utf8'), /新笔记/);
+  assert.ok(deletedResult.index.notes.some((note) => note.path === '已整理/测试.md'));
+
   const escape = await fetch(`${base}/assets?${new URLSearchParams({ notePath, src: '../../outside.png' })}`);
   assert.equal(escape.status, 404);
   await writeFile(path.join(vault, '新增.md'), '# 自动同步');
@@ -153,6 +164,9 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   assert.equal((await (await fetch(`${base}/health`)).json()).notesRoot, secondVault);
   const staleSave = await fetch(`${base}/notes/content`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zhixu-Workspace': encodeURIComponent(vault) }, body: JSON.stringify({ path: '新增.md', body: 'stale tab' }) });
   assert.equal(staleSave.status, 409);
+  assert.equal(await readFile(path.join(secondVault, '新增.md'), 'utf8'), '# 新知识库');
+  const staleDelete = await fetch(`${base}/files`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zhixu-Workspace': encodeURIComponent(vault) }, body: JSON.stringify({ action: 'delete-note', path: '新增.md', confirmed: true }) });
+  assert.equal(staleDelete.status, 409);
   assert.equal(await readFile(path.join(secondVault, '新增.md'), 'utf8'), '# 新知识库');
   assert.equal(await readFile(path.join(vault, '新增.md'), 'utf8'), '# 自动同步');
   await writeFile(path.join(secondVault, 'watch-new.md'), '# watch new folder');

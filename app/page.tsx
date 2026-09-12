@@ -292,6 +292,7 @@ function FileTree({
   disabled,
   onMove,
   onRename,
+  onDelete,
   dragged,
   setDragged,
 }: {
@@ -304,6 +305,7 @@ function FileTree({
   disabled: boolean;
   onMove: (source: string, kind: 'note' | 'folder', folder: string) => void;
   onRename: (source: string, kind: 'note' | 'folder', name: string) => Promise<void>;
+  onDelete: (source: string) => Promise<void>;
   dragged: DraggedItem | null;
   setDragged: (item: DraggedItem | null) => void;
 }) {
@@ -387,7 +389,7 @@ function FileTree({
 
   return (
     <div className="file-tree" role="tree" aria-label="知识库文件夹和笔记">
-      {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} />}
+      {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} onDelete={onDelete} />}
       {rootFolders.map((folder) => renderFolder(folder, 0))}
       {rootFiles.map((note) => (
         <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
@@ -625,6 +627,26 @@ export default function Home() {
     } finally { setFileBusy(false); }
   }
 
+  async function deleteTreeItem(source: string) {
+    if (fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length) throw new Error('请等待笔记保存或同步完成后删除。');
+    setFileBusy(true); setFileError('');
+    try {
+      const response = await fetch('/local-api/files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...workspaceHeaders() }, body: JSON.stringify({ action: 'delete-note', path: source, confirmed: true }) });
+      const result = await response.json() as FileResult & { error?: string };
+      if (!response.ok) throw new Error(result.error || '删除失败。');
+      lastSyncRef.current = result.index.generatedAt;
+      setRawNotes(result.index.notes.map((note) => ({ ...note, modified: new Date(note.modified) })));
+      setFolderPaths(result.index.folders);
+      if (selectedNote?.path === source) {
+        const remaining = filteredNotes.filter((note) => note.path !== source && result.index.notes.some((item) => item.id === note.id));
+        const next = remaining[Math.min(filteredNotes.findIndex((note) => note.path === source), remaining.length - 1)];
+        setSelectedId(next?.id || '');
+        if (next) setSelectedFolder(next.path.split('/').slice(0, -1).join('/'));
+        else setMobileReaderOpen(false);
+      }
+    } finally { setFileBusy(false); }
+  }
+
   function updateReaderWidth(nextWidth: number) {
     const clampedWidth = Math.min(1600, Math.max(480, Math.round(nextWidth)));
     window.localStorage.setItem(READER_WIDTH_STORAGE_KEY, String(clampedWidth));
@@ -822,6 +844,7 @@ export default function Home() {
                 disabled={fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length > 0}
                 onMove={(source, kind, folder) => void moveTreeItem(source, kind, folder)}
                 onRename={renameTreeItem}
+                onDelete={deleteTreeItem}
                 onToggle={toggleFolder}
                 onSelect={(note) => { setSelectedId(note.id); setSelectedFolder(note.path.split('/').slice(0, -1).join('/')); setMobileReaderOpen(true); }}
               />

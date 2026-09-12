@@ -18,6 +18,74 @@ async function fixture(t) {
   return { root, manager, read, write };
 }
 
+test('delete preserves recoverable content and assets, detaching only matching Feishu entries', async (t) => {
+  const { root, manager, write, read } = await fixture(t);
+  const raw = '---\r\ntitle: 笔记\r\n---\r\n![图](./笔记.assets/a.png)';
+  await write('算法/笔记.md', raw);
+  await write('算法/笔记.assets/a.png', png);
+  await write('其他.md', '[笔记](算法/笔记.md)');
+  const entry = { path: '算法/笔记.md', nodeToken: 'remote', scope: 'scope' };
+  const other = { path: '其他.md', nodeToken: 'other' };
+  const directories = [{ path: '算法', nodeToken: 'parent' }];
+  await write('.zhixu-feishu/state.json', JSON.stringify({ version: 1, entries: [entry, other], directories }));
+  const result = await manager.execute({ action: 'delete-note', path: entry.path, confirmed: true });
+  await assert.rejects(lstat(path.join(root, entry.path)), { code: 'ENOENT' });
+  assert.equal(await read(result.trashPath), raw);
+  const manifest = JSON.parse(await read(`${result.backup}/manifest.json`));
+  assert.equal(manifest.path, entry.path);
+  assert.deepEqual(manifest.entries, [entry]);
+  const state = JSON.parse(await read('.zhixu-feishu/state.json'));
+  assert.deepEqual(state.entries, [other]);
+  assert.deepEqual(state.directories, directories);
+  assert.deepEqual(await readFile(path.join(root, '算法/笔记.assets/a.png')), png);
+  assert.equal(await read('其他.md'), '[笔记](算法/笔记.md)');
+  await write(entry.path, '新版');
+  const second = await manager.execute({ action: 'delete-note', path: entry.path, confirmed: true });
+  assert.notEqual(second.trashPath, result.trashPath);
+  assert.equal(await read(result.trashPath), raw);
+  assert.equal(await read(second.trashPath), '新版');
+});
+
+test('delete requires confirmation and rejects invalid paths and pending sync', async (t) => {
+  const { root, manager, write, read } = await fixture(t);
+  await write('note.md', '保留');
+  await mkdir(path.join(root, 'folder.md'));
+  await assert.rejects(manager.execute({ action: 'delete-note', path: 'note.md' }), /确认/);
+  for (const source of ['', 'folder.md', '../note.md', '.trash/note.md', 'a/../note.md', 'a\\note.md', 'missing.md']) {
+    await assert.rejects(manager.execute({ action: 'delete-note', path: source, confirmed: true }));
+  }
+  for (const pending of [{ pending: {} }, { pendingMove: {} }]) {
+    await write('.zhixu-feishu/state.json', JSON.stringify({ version: 1, entries: [{ path: 'note.md', ...pending }] }));
+    await assert.rejects(manager.execute({ action: 'delete-note', path: 'note.md', confirmed: true }), /未完成/);
+  }
+  await write('.zhixu-feishu/sync.lock', 'occupied');
+  await assert.rejects(manager.execute({ action: 'delete-note', path: 'note.md', confirmed: true }), /同步或移动/);
+  assert.equal(await read('note.md'), '保留');
+  assert.equal(manager.busy, false);
+});
+
+test('delete refuses symlinked source and trash directories', async (t) => {
+  const { root, manager, write, read } = await fixture(t);
+  const outside = await mkdtemp(path.join(tmpdir(), 'zhixu-trash-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await write('note.md', '保留');
+  await writeFile(path.join(outside, 'note.md'), '外部');
+  await symlink(outside, path.join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(manager.execute({ action: 'delete-note', path: 'linked/note.md', confirmed: true }), /符号链接/);
+  await symlink(outside, path.join(root, '.trash'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(manager.execute({ action: 'delete-note', path: 'note.md', confirmed: true }), /符号链接/);
+  assert.equal(await read('note.md'), '保留');
+  assert.equal(await readFile(path.join(outside, 'note.md'), 'utf8'), '外部');
+});
+
+test('delete unassociated Markdown notes without creating sync state', async (t) => {
+  const { manager, write, read } = await fixture(t);
+  await write('学习.MDOWN', '内容');
+  const result = await manager.execute({ action: 'delete-note', path: '学习.MDOWN', confirmed: true });
+  assert.equal(await read(result.trashPath), '内容');
+  await assert.rejects(read('.zhixu-feishu/state.json'), { code: 'ENOENT' });
+});
+
 test('create folders and notes in a selected directory without overwriting', async (t) => {
   const { manager, read } = await fixture(t);
   assert.equal((await manager.execute({ action: 'create-folder', name: '技术提升' })).path, '技术提升');

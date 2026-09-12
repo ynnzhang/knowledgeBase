@@ -504,6 +504,9 @@ button { color: inherit; }
 .file-context-menu button:hover, .file-context-menu button:focus-visible { background: var(--green-soft); outline: none; }
 .file-context-menu kbd { margin-left: auto; font: inherit; font-size: 11px; color: var(--muted); }
 .rename-dialog { width: min(380px, calc(100vw - 32px)); }
+.file-context-menu button.danger { color: #b42318; }
+.file-context-menu button.danger:hover, .file-context-menu button.danger:focus-visible { background: #fef3f2; }
+.file-dialog footer .danger { background: #b42318; border-color: #b42318; color: white; }
 @media (max-width: 720px) {
   .top-navigation { gap: 6px; }
   .sidebar-collapsed .reader-panel { transform: translateX(0); }
