@@ -1,5 +1,5 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
-import type { Root, RootContent, Blockquote } from 'mdast';
+import type { Root, RootContent, Blockquote, PhrasingContent } from 'mdast';
 
 // Older imports included these generated labels. Hide only the standalone
 // label, retaining the source content and any errors or ordinary quotations.
@@ -26,11 +26,26 @@ export default function remarkCleanFeishu() {
 }
 
 export function cleanFeishuMarkdown(markdown: string) {
-  if (!markdown.includes('同步块')) return markdown;
+  if (!markdown.includes('同步块') && !/\\\d+[.)][ \t]/.test(markdown)) return markdown;
   const removals: Array<{ start: number; end: number }> = [];
+  function fixHeadingStart(nodes: PhrasingContent[]) {
+    const first = nodes[0];
+    if (!first) return;
+    if (first.type === 'text' && first.position) {
+      const start = first.position.start.offset!;
+      const raw = markdown.slice(start, first.position.end.offset!);
+      // Older Feishu imports escaped the digit instead of the delimiter.
+      // Only remove that single invalid escape at the beginning of a heading;
+      // preserve deliberate escaped backslashes, paths, inline code and fences.
+      if (/^\\\d+[.)][ \t]/.test(raw)) removals.push({ start, end: start + 1 });
+    } else if (first.type === 'strong' || first.type === 'emphasis' || first.type === 'delete' || first.type === 'link') {
+      fixHeadingStart(first.children);
+    }
+  }
   function visit(nodes: RootContent[]) {
     for (const node of nodes) {
       if (isSyncLabel(node) && node.position) removals.push({ start: node.position.start.offset!, end: node.position.end.offset! });
+      else if (node.type === 'heading') fixHeadingStart(node.children);
       else if ('children' in node) visit(node.children as RootContent[]);
     }
   }

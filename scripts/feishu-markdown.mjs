@@ -8,7 +8,11 @@ export function splitFrontmatter(raw) {
 }
 
 function escapeText(value) {
-  return value.replace(/[\\`*_{}\[\]<>#|~]/g, '\\$&').replace(/^(\s*)([-+] |\d+\. )/gm, '$1\\$2');
+  return value.replace(/[\\`*_{}\[\]<>#|~]/g, '\\$&')
+    .replace(/^(\s*)([-+] )/gm, '$1\\$2')
+    // Digits cannot be backslash-escaped in Markdown. Escape the list delimiter
+    // instead, so both headings and ordinary numbered text retain their text.
+    .replace(/^(\s*)(\d+)([.)])(?=[ \t])/gm, '$1$2\\$3');
 }
 
 export function blocksToMarkdown(blocks, documentId, { imagePaths = new Map() } = {}) {

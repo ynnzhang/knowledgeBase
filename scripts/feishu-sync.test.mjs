@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import { FeishuClient, createFeishuSync, parseWikiUrl, allowFeishuRequest } from './feishu-sync.mjs';
 import { blocksToMarkdown, prepareConverted } from './feishu-markdown.mjs';
 import { renameFeishuNotes } from './rename-feishu-notes.mjs';
@@ -157,6 +158,22 @@ test('block conversion preserves text semantics, nested lists, code fences, and 
   const table = prepareConverted({ blocks: [{ block_type: 31, parent_id: 'root', table: { property: { merge_info: [], column_size: 1 } } }], first_level_block_ids: ['a'] });
   assert.equal(table.descendants[0].parent_id, undefined);
   assert.equal(table.descendants[0].table.property.merge_info, undefined);
+});
+
+test('numbered headings and paragraphs preserve text without a visible escape or accidental list', () => {
+  for (const label of ['2. Flyway 是什么', '12. 数据库迁移', '2) 使用方法']) {
+    const blocks = [
+      { block_id: 'doc', block_type: 1, children: ['heading', 'paragraph'] },
+      { block_id: 'heading', block_type: 4, heading2: { elements: [{ text_run: { content: label } }] } },
+      textBlock('paragraph', label),
+    ];
+    const { markdown } = blocksToMarkdown(blocks, 'doc');
+    for (const source of [markdown, markdown.replaceAll('\n', '\r\n')]) {
+      const tree = fromMarkdown(source);
+      assert.deepEqual(tree.children.map((node) => node.type), ['heading', 'paragraph']);
+      assert.deepEqual(tree.children.map((node) => node.children[0].value), [label, label]);
+    }
+  }
 });
 
 test('client caches tokens, handles empty wiki pages, and retries rate limits', async () => {

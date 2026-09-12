@@ -19,5 +19,6 @@ jobs:
       - run: npm ci
       - run: npm run test:local
       - run: npm run test:feishu
+      - run: npm run test:outline
       - run: npx tsc --noEmit
       - run: npm run build

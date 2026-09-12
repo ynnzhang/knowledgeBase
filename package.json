@@ -15,6 +15,7 @@
     "notes:watch": "node scripts/sync-notes.mjs --watch",
     "test:local": "node --test scripts/local-notes.test.mjs scripts/local-files.test.mjs scripts/local-workspace.test.mjs scripts/local-platform.test.mjs scripts/check-project.test.mjs",
     "test:feishu": "node --test scripts/feishu-sync.test.mjs",
+    "test:outline": "node --experimental-strip-types --test scripts/note-outline.test.mjs",
     "prebuild": "npm run notes:sync",
     "build": "vinext build",
     "start": "vinext start",
