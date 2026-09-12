@@ -823,7 +823,7 @@ export default function Home() {
                 onMove={(source, kind, folder) => void moveTreeItem(source, kind, folder)}
                 onRename={renameTreeItem}
                 onToggle={toggleFolder}
-                onSelect={(note) => { setSelectedId(note.id); setSelectedFolder(note.path.split('/').slice(0, -1).join('/')); setSidebarView('outline'); setMobileReaderOpen(true); }}
+                onSelect={(note) => { setSelectedId(note.id); setSelectedFolder(note.path.split('/').slice(0, -1).join('/')); setMobileReaderOpen(true); }}
               />
               {!filteredNotes.length && (
                 <div className="empty-state">

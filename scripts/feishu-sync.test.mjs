@@ -192,6 +192,57 @@ test('client caches tokens, handles empty wiki pages, and retries rate limits', 
   await assert.rejects(() => denied.accessToken(), (error) => !error.message.includes('secret'));
 });
 
+test('read pacing shares quotas across documents, starts immediately and accounts for network time', async () => {
+  let clock = 0, slow = false;
+  const waits = [], starts = [];
+  const client = new FeishuClient({ appId: 'a', appSecret: 'b' }, async (url) => {
+    if (url.includes('/auth/')) return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+    starts.push(clock);
+    if (slow) clock += 800;
+    return Response.json({ code: 0, data: {} });
+  }, async (ms) => { waits.push(ms); clock += ms; }, () => clock);
+  await client.request('/docx/v1/documents/a');
+  assert.deepEqual(waits, []);
+  await client.request('/docx/v1/documents/b/blocks');
+  assert.deepEqual(starts, [0, 220]);
+  slow = true;
+  await client.request('/docx/v1/documents/a');
+  const count = waits.length;
+  await client.request('/docx/v1/documents/b');
+  assert.equal(waits.length, count, 'network time already satisfied the interval');
+  slow = false;
+  await client.request('/wiki/v2/spaces/s/nodes');
+  await client.request('/wiki/v2/spaces/get_node');
+  assert.equal(waits.at(-1), 650);
+  await client.request('/drive/v1/medias/a/download');
+  await client.request('/drive/v1/medias/b/download');
+  assert.equal(waits.at(-1), 220);
+  await client.request('/docx/v1/documents/a/blocks', { method: 'POST' });
+  await client.request('/docx/v1/documents/b/blocks', { method: 'POST' });
+  assert.equal(waits.at(-1), 650);
+});
+
+test('concurrent reads share token acquisition and wait for their shared rate slot', async () => {
+  let clock = 0, tokens = 0, reads = 0;
+  const waiting = [];
+  const client = new FeishuClient({ appId: 'a', appSecret: 'b' }, async (url) => {
+    if (url.includes('/auth/')) {
+      tokens++; await delay(5);
+      return Response.json({ code: 0, tenant_access_token: 'token', expire: 7200 });
+    }
+    reads++; return Response.json({ code: 0, data: {} });
+  }, (ms) => new Promise((resolve) => waiting.push(() => { clock += ms; resolve(); })), () => clock);
+  const requests = Array.from({ length: 3 }, (_, index) => client.request(`/docx/v1/documents/doc${index}`));
+  for (let i = 0; i < 100 && !waiting.length; i++) await delay(1);
+  assert.equal(tokens, 1); assert.equal(reads, 1); assert.equal(waiting.length, 1);
+  waiting.shift()();
+  for (let i = 0; i < 100 && !waiting.length; i++) await delay(1);
+  assert.equal(reads, 2); assert.equal(waiting.length, 1);
+  waiting.shift()();
+  await Promise.all(requests);
+  assert.equal(reads, 3); assert.equal(clock, 440);
+});
+
 test('import recursively, preserve YAML, pull remote updates, detect two-sided conflicts', async (t) => {
   const { notes, fake, service, run } = await setup(t);
   assert.equal((await run('import')).state, 'done');
@@ -862,6 +913,62 @@ function addImage(fake, documentId = 'docChild', token = 'media') {
   doc.blocks.push({ block_id: id, block_type: 27, image: { token } });
   fake.media.set(token, tinyPng);
 }
+
+test('import downloads up to three images concurrently, deduplicates tokens and serializes identical files', async (t) => {
+  const { notes, fake, run } = await setup(t);
+  const doc = fake.docs.get('docChild');
+  for (const [index, token] of ['a', 'b', 'c', 'd', 'e', 'a'].entries()) {
+    const id = `picture${index}`;
+    doc.blocks[0].children.push(id);
+    doc.blocks.push({ block_id: id, block_type: 27, image: { token } });
+    fake.media.set(token, tinyPng);
+  }
+  let active = 0, peak = 0;
+  const download = fake.downloadImage.bind(fake);
+  fake.downloadImage = async (token) => {
+    active++; peak = Math.max(active, peak);
+    try { await delay(15); return await download(token); }
+    finally { active--; }
+  };
+  const result = await run('import');
+  assert.equal(result.state, 'done', JSON.stringify(result.results));
+  assert.equal(peak, 3); assert.equal(active, 0);
+  assert.equal(fake.downloads.length, 5);
+  const raw = await readFile(path.join(notes, '飞书/技术提升/子页面.md'), 'utf8');
+  assert.equal(markdownImages(raw).length, 6);
+  const assets = await readdir(path.join(notes, '飞书/技术提升/子页面.assets'));
+  assert.equal(assets.length, 1);
+  assert.deepEqual(await readFile(path.join(notes, '飞书/技术提升/子页面.assets', assets[0])), tinyPng);
+});
+
+test('failed parallel downloads drain before task completion and preserve existing note and baseline', async (t) => {
+  const { notes, fake, run, service } = await setup(t);
+  await run('import');
+  const notePath = '飞书/技术提升/子页面.md';
+  const before = await readFile(path.join(notes, notePath), 'utf8');
+  const hash = (await service.status(notePath)).entry.localHash;
+  fake.set('docChild', '更新后的正文');
+  const doc = fake.docs.get('docChild');
+  for (const token of ['fail', 'slow1', 'slow2', 'notStarted']) {
+    doc.blocks[0].children.push(token);
+    doc.blocks.push({ block_id: token, block_type: 27, image: { token } });
+  }
+  let active = 0;
+  const started = [];
+  fake.downloadImage = async (token) => {
+    started.push(token); active++;
+    try {
+      await delay(token === 'fail' ? 5 : 30);
+      if (token === 'fail') throw new Error('download failed');
+      return { bytes: tinyPng };
+    } finally { active--; }
+  };
+  assert.equal((await run('pull', notePath)).state, 'error');
+  assert.equal(active, 0);
+  assert.deepEqual(started, ['fail', 'slow1', 'slow2']);
+  assert.equal(await readFile(path.join(notes, notePath), 'utf8'), before);
+  assert.equal((await service.status(notePath)).entry.localHash, hash);
+});
 
 test('pull stores real image files, preserves them on refresh, and uploads them on push', async (t) => {
   const { notes, fake, run, service } = await setup(t);

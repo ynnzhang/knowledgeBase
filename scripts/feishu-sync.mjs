@@ -26,15 +26,24 @@ export function parseWikiUrl(value) {
 }
 
 export class FeishuClient {
-  constructor(config, fetchImpl = fetch, pause = delay) {
+  constructor(config, fetchImpl = fetch, pause = delay, now = Date.now) {
     this.config = config;
     this.fetch = fetchImpl;
     this.pause = pause;
+    this.now = now;
+    this.requestQueues = new Map();
+    this.tokenRequest = null;
     this.token = '';
     this.expires = 0;
   }
   async accessToken() {
-    if (this.token && Date.now() < this.expires) return this.token;
+    if (this.token && this.now() < this.expires) return this.token;
+    if (this.tokenRequest) return this.tokenRequest;
+    this.tokenRequest = this.fetchToken();
+    try { return await this.tokenRequest; }
+    finally { this.tokenRequest = null; }
+  }
+  async fetchToken() {
     const response = await this.fetch(`${API}/auth/v3/tenant_access_token/internal`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ app_id: this.config.appId, app_secret: this.config.appSecret }), signal: AbortSignal.timeout(20000), redirect: 'error',
@@ -42,14 +51,32 @@ export class FeishuClient {
     const data = await response.json();
     if (!response.ok || data.code !== 0 || !data.tenant_access_token) throw new Error(`飞书身份验证失败（${data.code ?? response.status}），请检查 App ID、App Secret 及应用发布状态。`);
     this.token = data.tenant_access_token;
-    this.expires = Date.now() + Math.max(0, (data.expire - 120) * 1000);
+    this.expires = this.now() + Math.max(0, (data.expire - 120) * 1000);
     return this.token;
+  }
+  async waitForRequest(endpoint, method) {
+    // Official limits: wiki 100/min, document reads and media downloads 5/sec.
+    // Share each bucket across documents; concurrent downloads must not multiply
+    // the allowed rate. Preserve the existing conservative pace for all writes.
+    const bucketName = endpoint.startsWith('/wiki/') ? 'wiki'
+      : method === 'GET' && endpoint.startsWith('/docx/') ? 'document-read'
+      : method === 'GET' && /^\/drive\/v1\/medias\/[^/]+\/download$/.test(endpoint) ? 'media-read' : 'other';
+    const interval = ['document-read', 'media-read'].includes(bucketName) ? 220 : 650;
+    if (!this.requestQueues.has(bucketName)) this.requestQueues.set(bucketName, { tail: Promise.resolve(), last: null });
+    const bucket = this.requestQueues.get(bucketName);
+    const admission = bucket.tail.then(async () => {
+      const wait = bucket.last === null ? 0 : Math.max(0, interval - (this.now() - bucket.last));
+      if (wait) await this.pause(wait);
+      bucket.last = this.now();
+    });
+    bucket.tail = admission.catch(() => {});
+    await admission;
   }
   async request(endpoint, { method = 'GET', body, query = {}, binary = false, form } = {}) {
     const url = `${API}${endpoint}?${new URLSearchParams(query)}`;
     for (let attempt = 0; attempt < 4; attempt++) {
       const token = await this.accessToken();
-      await this.pause(650); // Wiki permits 100 requests/minute; doc writes permit 3/sec.
+      await this.waitForRequest(endpoint, method);
       const response = await this.fetch(url, { method, headers: { Authorization: `Bearer ${token}`, ...(form ? {} : { 'Content-Type': 'application/json' }) }, body: form || (body === undefined ? undefined : JSON.stringify(body)), signal: AbortSignal.timeout(binary || form ? 60000 : 25000), redirect: 'error' });
       if (binary && response.ok && !response.headers.get('content-type')?.includes('application/json')) return imageResponse(response);
       const result = await response.json();
@@ -57,7 +84,7 @@ export class FeishuClient {
         await this.pause(Math.min(10000, Math.max(Number(response.headers.get('retry-after') || 0) * 1000, 1000 * 2 ** attempt)));
         continue;
       }
-      if ([99991663, 99991668].includes(result.code) && attempt < 1) { this.token = ''; continue; }
+      if ([99991663, 99991668].includes(result.code) && attempt < 1) { if (this.token === token) this.token = ''; continue; }
       if (!response.ok || result.code !== 0) {
         const hint = [131006, 1770032, 99991672].includes(result.code) || response.status === 403
           ? '请检查应用 API 权限是否已发布，并给应用添加目标知识库/文档的阅读和编辑权限。'
@@ -222,21 +249,42 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
     async function localizeImages(remote, filePath, documentId) {
       const blocks = remote.renderBlocks || remote.blocks;
       const imagePaths = new Map();
-      for (const block of blocks.filter((block) => block.block_type === 27 && block.image?.token)) {
-        const token = block.image.token;
-        if (imagePaths.has(token)) continue;
+      const tokens = [...new Set(blocks.filter((block) => block.block_type === 27 && block.image?.token).map((block) => block.image.token))];
+      let cursor = 0, failed = false, writeTail = Promise.resolve();
+      async function localize(token) {
         job.progress = `正在下载「${path.basename(filePath)}」的图片…`;
-        if (!downloadedImages.has(token)) downloadedImages.set(token, await client.downloadImage(token));
-        const asset = downloadedImages.get(token), type = imageType(asset.bytes);
-        const relative = `${filePath.replace(/\.md(?:own)?$/i, '')}.assets/feishu-${bytesHash(asset.bytes)}${type.extension}`;
-        const file = await safePath(relative, true);
-        try { await writeFile(file, asset.bytes, { flag: 'wx' }); }
-        catch (error) {
-          if (error.code !== 'EEXIST') throw error;
-          if (!(await readFile(file)).equals(asset.bytes)) throw new Error('本地同步图片已被修改，请保留图片并处理冲突后重试。');
+        if (!downloadedImages.has(token)) {
+          const download = client.downloadImage(token).catch((error) => { downloadedImages.delete(token); throw error; });
+          downloadedImages.set(token, download);
         }
-        imagePaths.set(token, path.posix.relative(path.posix.dirname(filePath), relative));
+        const asset = await downloadedImages.get(token), type = imageType(asset.bytes);
+        const relative = `${filePath.replace(/\.md(?:own)?$/i, '')}.assets/feishu-${bytesHash(asset.bytes)}${type.extension}`;
+        // Distinct remote tokens can contain identical bytes. Serialize local
+        // creation so directory checks and hash-named files cannot race.
+        const persisted = writeTail.then(async () => {
+          const file = await safePath(relative, true);
+          try { await writeFile(file, asset.bytes, { flag: 'wx' }); }
+          catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            if (!(await readFile(file)).equals(asset.bytes)) throw new Error('本地同步图片已被修改，请保留图片并处理冲突后重试。');
+          }
+          imagePaths.set(token, path.posix.relative(path.posix.dirname(filePath), relative));
+        });
+        writeTail = persisted.catch(() => {});
+        await persisted;
       }
+      // Drain every in-flight worker on failure before releasing the workspace
+      // lock or continuing to another note. Never leave writes in the background.
+      const workers = Array.from({ length: Math.min(3, tokens.length) }, async () => {
+        while (!failed && cursor < tokens.length) {
+          const token = tokens[cursor++];
+          try { await localize(token); }
+          catch (error) { failed = true; throw error; }
+        }
+      });
+      const completed = await Promise.allSettled(workers);
+      const failure = completed.find((result) => result.status === 'rejected');
+      if (failure) throw failure.reason;
       return blocksToMarkdown(blocks, documentId, { imagePaths }).markdown;
     }
     const allocatedNames = new Set();
