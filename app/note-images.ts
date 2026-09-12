@@ -1,3 +1,4 @@
+import { localWorkspaceToken, workspaceHeaders } from './local-workspace';
 const PASSTHROUGH_IMAGE_SOURCE = /^(?:https?:|data:|blob:)/i;
 
 function isLocalWorkspace() {
@@ -22,7 +23,7 @@ export function resolveNoteImageUrl(notePath: string, imageSource?: string) {
     return imageSource || '';
   }
   if (!isLocalWorkspace()) return publishedAssetUrl(notePath, imageSource);
-  const query = new URLSearchParams({ notePath, src: imageSource });
+  const query = new URLSearchParams({ notePath, src: imageSource, workspace: localWorkspaceToken() });
   return `/local-api/assets?${query.toString()}`;
 }
 
@@ -31,7 +32,7 @@ export async function uploadNoteImage(notePath: string, image: File) {
   const endpoint = isLocalWorkspace() ? '/local-api/notes/images' : '/api/note-images';
   const response = await fetch(`${endpoint}?${query.toString()}`, {
     method: 'POST',
-    headers: { 'Content-Type': image.type || 'application/octet-stream' },
+    headers: { 'Content-Type': image.type || 'application/octet-stream', ...workspaceHeaders() },
     body: image,
   });
   const responseText = await response.text();

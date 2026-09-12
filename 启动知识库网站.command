@@ -20,7 +20,7 @@ if [ "$?" -ne 0 ]; then
   exit 1
 fi
 
-node scripts/start-mac.mjs
+node scripts/start-local.mjs
 app_exit=$?
 if [ "$app_exit" -ne 0 ]; then
   read -r -p "按回车键关闭窗口……"

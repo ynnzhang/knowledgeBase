@@ -18,6 +18,7 @@
 
 # misc
 .DS_Store
+/.idea/
 *.pem
 
 # debug
@@ -42,3 +43,6 @@ next-env.d.ts
 /public/note-assets/
 /.feishu-local.json
 /.feishu-local.json.*.tmp
+
+/.knowledge-base.local.json
+/.knowledge-base.local.json.*.tmp

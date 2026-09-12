@@ -1,73 +1,48 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableExtensions
+setlocal EnableExtensions DisableDelayedExpansion
 
-cd /d "%~dp0"
+pushd "%~dp0"
+if errorlevel 1 goto directory_failed
 title 知序 - 本地知识库服务
 
-set "APP_URL=http://localhost:3000/"
-set "API_URL=http://127.0.0.1:4312/health"
-set "NPM_CMD="
+where node.exe >nul 2>&1
+if errorlevel 1 goto node_missing
+where npm.cmd >nul 2>&1
+if errorlevel 1 goto node_missing
 
-for /f "delims=" %%I in ('where npm.cmd 2^>nul') do if not defined NPM_CMD set "NPM_CMD=%%I"
-if defined NPM_CMD goto npm_ready
-if exist "D:\node\npm.cmd" set "NPM_CMD=D:\node\npm.cmd"
-if defined NPM_CMD goto npm_ready
+node -e "const [major, minor] = process.versions.node.split('.').map(Number); process.exit(major > 22 || (major === 22 && minor >= 13) ? 0 : 1)"
+if errorlevel 1 goto node_old
 
-echo.
-echo [错误] 没有找到 npm.cmd，请先安装 Node.js 22 或更高版本。
-echo.
-pause
-exit /b 1
-
-:npm_ready
-powershell.exe -NoProfile -Command "try { $response = Invoke-WebRequest -Uri '%APP_URL%' -UseBasicParsing -TimeoutSec 2; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { exit 0 } } catch {}; exit 1" >nul 2>&1
-set "SITE_RUNNING=%ERRORLEVEL%"
-powershell.exe -NoProfile -Command "try { $response = Invoke-WebRequest -Uri '%API_URL%' -UseBasicParsing -TimeoutSec 2; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; exit 1" >nul 2>&1
-set "API_RUNNING=%ERRORLEVEL%"
-
-if not "%SITE_RUNNING%"=="0" goto prepare_start
-if not "%API_RUNNING%"=="0" goto start_api_only
-
-echo 知序已经在运行。
-if not defined ZHIXU_NO_BROWSER echo 正在打开浏览器……
-if not defined ZHIXU_NO_BROWSER start "" "%APP_URL%"
-exit /b 0
-
-:prepare_start
-if exist "node_modules\.bin\vinext.cmd" goto start_all
-echo 首次启动需要安装项目依赖，请稍候……
-call "%NPM_CMD%" install
-if errorlevel 1 goto install_failed
-
-:start_all
-echo ==================================================
-echo   知序正在启动
-echo   笔记目录：E:\Note
-echo   本地地址：%APP_URL%
-echo ==================================================
-echo.
-echo 浏览器将在服务就绪后自动打开。
-echo 请保留此窗口；关闭窗口即可停止网站和笔记监视。
-echo.
-if not defined ZHIXU_NO_BROWSER start "" /b powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 4; Start-Process '%APP_URL%'" >nul 2>&1
-call "%NPM_CMD%" run dev
+if not exist "scripts\start-local.mjs" goto project_incomplete
+node scripts/start-local.mjs
 set "APP_EXIT=%ERRORLEVEL%"
+popd
 if "%APP_EXIT%"=="0" exit /b 0
 echo.
-echo [错误] 本地服务异常退出，错误码：%APP_EXIT%
+echo [错误] 启动失败，请查看上方提示。
 pause
 exit /b %APP_EXIT%
 
-:start_api_only
-echo 网站已经运行，正在补充启动本地编辑服务……
-if not defined ZHIXU_NO_BROWSER start "" "%APP_URL%"
-call "%NPM_CMD%" run notes:watch
-exit /b
+:project_incomplete
+echo [错误] 项目文件不完整，缺少 scripts\start-local.mjs。
+echo 请完整解压最新版项目包后重试，不要只复制启动文件或部分 scripts 文件。
+goto failed
 
-:install_failed
-echo.
-echo [错误] 依赖安装失败，请检查网络或 Node.js 环境。
-echo.
+:node_missing
+echo [错误] 请先安装 Node.js 22.13 或更高版本，并将 Node.js 和 npm 加入 PATH，然后重新打开此文件。
+goto failed
+
+:node_old
+echo [错误] Node.js 版本过低，需要 22.13 或更高版本。
+goto failed
+
+:directory_failed
+echo [错误] 无法进入项目目录，请检查文件夹是否可访问。
+pause
+exit /b 1
+
+:failed
+popd
 pause
 exit /b 1

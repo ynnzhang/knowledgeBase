@@ -1,14 +1,16 @@
 'use client';
-/* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
-import remarkGfm from 'remark-gfm';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent } from 'react';
 import { parse as parseYaml } from 'yaml';
 import MarkdownRichEditor from './MarkdownRichEditor';
+import NoteOutline from './NoteOutline';
 import FeishuSyncPanel from './FeishuSyncPanel';
-import { resolveNoteImageUrl } from './note-images';
+import TagManager from './TagManager';
+import FileRename, { type RenameTarget } from './FileRename';
+import ReaderWidthControl from './ReaderWidthControl';
+import FileActions, { type FileResult } from './FileActions';
+import LocalFolderPicker from './LocalFolderPicker';
+import { setLocalWorkspace, workspaceHeaders } from './local-workspace';
 import {
   AlertTriangle,
   BookOpen,
@@ -19,22 +21,17 @@ import {
   Folder,
   FolderOpen,
   Check,
-  Eye,
   Info,
-  Maximize2,
-  Pencil,
-  Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCcw,
-  Save,
   Search,
   Settings2,
-  ShieldCheck,
-  Tag,
   X,
 } from 'lucide-react';
 
 type NoteStatus = 'expired' | 'stale' | 'soon' | 'fresh';
-type ReaderMode = 'view' | 'edit';
+type DraggedItem = { path: string; kind: 'note' | 'folder' };
 
 // The platform does not change during a browser session.
 function subscribePlatform() {
@@ -75,6 +72,7 @@ type FolderNode = {
 };
 
 type NotesIndexPayload = {
+  workspace?: string;
   generatedAt?: string;
   error?: string | null;
   folders?: string[];
@@ -88,6 +86,17 @@ type NoteOverridePayload = {
 const DAY = 86_400_000;
 const READER_WIDTH_STORAGE_KEY = 'zhixu.reader-width';
 const READER_WIDTH_EVENT = 'zhixu-reader-width-change';
+const SIDEBAR_EVENT = 'zhixu-sidebar-change';
+const SIDEBAR_KEY = 'zhixu.sidebar-collapsed';
+function subscribeSidebar(callback: () => void) {
+  window.addEventListener('storage', callback); window.addEventListener(SIDEBAR_EVENT, callback);
+  return () => { window.removeEventListener('storage', callback); window.removeEventListener(SIDEBAR_EVENT, callback); };
+}
+function subscribeMobile(callback: () => void) {
+  const media = window.matchMedia('(max-width: 720px)'); media.addEventListener('change', callback);
+  return () => media.removeEventListener('change', callback);
+}
+
 const STATUS_META: Record<NoteStatus, string> = {
   expired: '已过期',
   stale: '需复查',
@@ -246,94 +255,6 @@ function MetadataInfo({ note }: { note: Note }) {
   );
 }
 
-function TagEditor({
-  note,
-  allTags,
-  onSave,
-}: {
-  note: Note;
-  allTags: string[];
-  onSave: (tags: string[]) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(note.tags);
-  const [input, setInput] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const suggestions = allTags.filter((tag) => !draft.includes(tag));
-
-  function addTag(value: string) {
-    const tag = value.trim().replace(/^#+/, '').slice(0, 32);
-    if (!tag || draft.includes(tag) || draft.length >= 20) return;
-    setDraft((current) => [...current, tag]);
-    setInput('');
-    setError('');
-  }
-
-  async function save() {
-    setSaving(true);
-    setError('');
-    try {
-      await onSave(draft);
-      setOpen(false);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '标签保存失败。');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="tag-editor">
-      <button
-        className={open ? 'tag-editor-trigger active' : 'tag-editor-trigger'}
-        title="创建或管理标签"
-        aria-label="创建或管理标签"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <Tag size={17} />
-        <Plus className="tag-plus" size={10} />
-      </button>
-      {open && (
-        <div className="tag-editor-panel">
-          <div className="tag-editor-head">
-            <div><strong>管理标签</strong><small>保存后写入 Markdown 元数据，AI 可直接读取</small></div>
-            <button onClick={() => setOpen(false)} aria-label="关闭标签编辑"><X size={15} /></button>
-          </div>
-
-          <div className="tag-drafts">
-            {draft.length ? draft.map((tag) => (
-              <span key={tag}>#{tag}<button onClick={() => setDraft((current) => current.filter((item) => item !== tag))} aria-label={`移除标签 ${tag}`}><X size={11} /></button></span>
-            )) : <small>还没有标签，输入一个新标签开始分类。</small>}
-          </div>
-
-          <div className="tag-input-row">
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTag(input); } }}
-              placeholder="新标签，例如：前端、英语、算法"
-              maxLength={32}
-              autoFocus
-            />
-            <button onClick={() => addTag(input)} disabled={!input.trim()}><Plus size={15} />添加</button>
-          </div>
-
-          {suggestions.length > 0 && (
-            <div className="tag-suggestions"><small>已有标签</small><div>{suggestions.slice(0, 12).map((tag) => <button key={tag} onClick={() => addTag(tag)}>#{tag}</button>)}</div></div>
-          )}
-
-          {error && <p className="tag-error">{error}</p>}
-          <button className="tag-save" onClick={() => void save()} disabled={saving}>
-            <Check size={15} />{saving ? '正在保存…' : '保存标签'}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function buildFolderTree(notes: Note[], folderPaths: string[]): FolderNode {
   const root: FolderNode = { name: '知识库', path: '', folders: new Map(), notes: [] };
 
@@ -365,43 +286,94 @@ function FileTree({
   root,
   expanded,
   selectedId,
+  selectedFolder,
   onToggle,
   onSelect,
+  disabled,
+  onMove,
+  onRename,
+  dragged,
+  setDragged,
 }: {
   root: FolderNode;
   expanded: Set<string>;
   selectedId?: string;
+  selectedFolder: string;
   onToggle: (path: string) => void;
   onSelect: (note: Note) => void;
+  disabled: boolean;
+  onMove: (source: string, kind: 'note' | 'folder', folder: string) => void;
+  onRename: (source: string, kind: 'note' | 'folder', name: string) => Promise<void>;
+  dragged: DraggedItem | null;
+  setDragged: (item: DraggedItem | null) => void;
 }) {
-  function countNotes(folder: FolderNode): number {
-    return folder.notes.length + [...folder.folders.values()].reduce((sum, child) => sum + countNotes(child), 0);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+  function renameHandlers(path: string, kind: 'note' | 'folder') {
+    return {
+      onContextMenu(event: React.MouseEvent) {
+        if (disabled || !isLocalWorkspace()) return;
+        event.preventDefault(); event.stopPropagation();
+        setRenameTarget({ path, kind, x: event.clientX, y: event.clientY });
+      },
+      onKeyDown(event: React.KeyboardEvent) {
+        if (event.key !== 'F2' || disabled || !isLocalWorkspace()) return;
+        event.preventDefault();
+        setRenameTarget({ path, kind, x: 0, y: 0, editing: true });
+      },
+    };
   }
+  function startDrag(event: DragEvent, path: string, kind: 'note' | 'folder') {
+    if (disabled || !isLocalWorkspace()) { event.preventDefault(); return; }
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-zhixu-file', JSON.stringify({ path, kind }));
+    setDragged({ path, kind });
+  }
+  function validTarget(folder: string) {
+    return !disabled && dragged && folder !== dragged.path.split('/').slice(0, -1).join('/')
+      && !(dragged.kind === 'folder' && (folder === dragged.path || folder.startsWith(`${dragged.path}/`)));
+  }
+  function dropHandlers(folder: string) {
+    return {
+      onDragOver(event: DragEvent) {
+        event.stopPropagation();
+        if (!validTarget(folder)) { event.dataTransfer.dropEffect = 'none'; return; }
+        event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(folder);
+      },
+      onDragLeave(event: DragEvent) {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null);
+      },
+      onDrop(event: DragEvent) {
+        event.preventDefault(); event.stopPropagation();
+        if (validTarget(folder) && dragged) onMove(dragged.path, dragged.kind, folder);
+        setDragged(null); setDropTarget(null);
+      },
+    };
+  }
+  function endDrag() { setDragged(null); setDropTarget(null); }
 
   function renderFolder(folder: FolderNode, depth: number) {
     const isOpen = expanded.has(folder.path);
     const folders = [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
     const files = [...folder.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-    const itemCount = countNotes(folder);
 
     return (
       <div key={folder.path} className="tree-folder">
-        <button className="folder-row" onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18 }}>
+        <button className={`folder-row ${selectedFolder === folder.path ? 'selected-folder' : ''} ${dropTarget === folder.path ? 'drop-target' : ''}`} draggable={!disabled} onDragStart={(event) => startDrag(event, folder.path, 'folder')} onDragEnd={endDrag} {...dropHandlers(folder.path)} {...renameHandlers(folder.path, 'folder')} title={`${folder.name} · 右键或 F2 重命名`} aria-pressed={selectedFolder === folder.path} onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18 }}>
           <ChevronDown className={isOpen ? 'tree-chevron open' : 'tree-chevron'} size={14} />
           {isOpen ? <FolderOpen size={17} /> : <Folder size={17} />}
           <span>{folder.name}</span>
-          <em>{itemCount}</em>
         </button>
         {isOpen && (
           <div>
             {folders.map((child) => renderFolder(child, depth + 1))}
             {files.map((note) => (
               <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
-                <button className="file-open" onClick={() => onSelect(note)} style={{ paddingLeft: 31 + depth * 18 }}>
+                <button className="file-open" {...renameHandlers(note.path, 'note')} draggable={!disabled} onDragStart={(event) => startDrag(event, note.path, 'note')} onDragEnd={endDrag} onClick={() => onSelect(note)} style={{ paddingLeft: 31 + depth * 18 }}>
                   <FileText size={16} />
                   <span title={note.name}>{note.name}</span>
                 </button>
-                <MetadataInfo note={note} />
               </div>
             ))}
           </div>
@@ -415,13 +387,13 @@ function FileTree({
 
   return (
     <div className="file-tree" role="tree" aria-label="知识库文件夹和笔记">
+      {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} />}
       {rootFolders.map((folder) => renderFolder(folder, 0))}
       {rootFiles.map((note) => (
         <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
-          <button className="file-open" onClick={() => onSelect(note)}>
+          <button className="file-open" {...renameHandlers(note.path, 'note')} draggable={!disabled} onDragStart={(event) => startDrag(event, note.path, 'note')} onDragEnd={endDrag} onClick={() => onSelect(note)}>
             <FileText size={16} /><span title={note.name}>{note.name}</span>
           </button>
-          <MetadataInfo note={note} />
         </div>
       ))}
     </div>
@@ -439,14 +411,27 @@ export default function Home() {
   const [defaultInterval, setDefaultInterval] = useState(90);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState('');
-  const [message, setMessage] = useState('正在读取本地知识库…');
-  const [readerMode, setReaderMode] = useState<ReaderMode>('view');
+  const [sidebarView, setSidebarView] = useState<'files' | 'outline'>('files');
+  const readerRef = useRef<HTMLElement>(null);
+  const [indexError, setIndexError] = useState('');
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
   const readerWidth = useSyncExternalStore(subscribeReaderWidth, readReaderWidth, () => 780);
+  const sidebarCollapsed = useSyncExternalStore(subscribeSidebar, () => window.localStorage.getItem(SIDEBAR_KEY) === 'true', () => false);
+  const isMobile = useSyncExternalStore(subscribeMobile, () => window.matchMedia('(max-width: 720px)').matches, () => false);
   const [editorDrafts, setEditorDrafts] = useState<Record<string, string>>({});
   const [savingNote, setSavingNote] = useState(false);
   const [feishuBusy, setFeishuBusy] = useState(false);
+  const [fileBusy, setFileBusy] = useState(false);
+  const [selectedFolder, setSelectedFolder] = useState('');
+  const [workspacePath, setWorkspacePath] = useState('');
+  const [fileError, setFileError] = useState('');
+  const [draggedItem, setDraggedItem] = useState<DraggedItem | null>(null);
+  const [rootDropActive, setRootDropActive] = useState(false);
+  const loadedWorkspaceRef = useRef('');
+  const hasDraftsRef = useRef(false);
   const [editorError, setEditorError] = useState('');
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
+  const sidebarHidden = sidebarCollapsed || (isMobile && mobileReaderOpen);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const lastSyncRef = useRef('');
@@ -473,11 +458,16 @@ export default function Home() {
         const response = await fetch(`/notes-index.json?t=${Date.now()}`, { cache: 'no-store' });
         if (!response.ok) return;
         const payload = (await response.json()) as NotesIndexPayload;
-        if (!active || !payload.generatedAt || payload.generatedAt === lastSyncRef.current) return;
+        if (!active || !payload.generatedAt || payload.generatedAt <= lastSyncRef.current) return;
+        if (payload.workspace && loadedWorkspaceRef.current && loadedWorkspaceRef.current !== payload.workspace) {
+          if (hasDraftsRef.current) { setEditorError('另一个窗口已切换知识库，请先复制未保存的内容，再刷新页面。'); return; }
+          window.location.reload(); return;
+        }
+        if (payload.workspace) { loadedWorkspaceRef.current = payload.workspace; setWorkspacePath(payload.workspace); setLocalWorkspace(payload.workspace); }
         lastSyncRef.current = payload.generatedAt;
 
         if (payload.error) {
-          setMessage(payload.error);
+          setIndexError(payload.error);
           return;
         }
 
@@ -511,7 +501,7 @@ export default function Home() {
           const preserved = [...current].filter((folder) => available.has(folder));
           return new Set(preserved.length ? preserved : nextFolders.filter((folder) => !folder.includes('/')));
         });
-        setMessage(`知识库已更新：${nextFolders.length} 个文件夹、${nextNotes.length} 篇 Markdown 笔记。`);
+        setIndexError('');
       } catch {
         // 开发服务器首次启动时索引可能尚未生成，下一轮会自动重试。
       }
@@ -525,6 +515,8 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => { hasDraftsRef.current = savingNote || Object.keys(editorDrafts).length > 0; }, [savingNote, editorDrafts]);
+
   useEffect(() => () => {
     if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
   }, []);
@@ -532,11 +524,6 @@ export default function Home() {
   const notes = useMemo(
     () => rawNotes.map((note) => parseNote(note, defaultInterval)),
     [rawNotes, defaultInterval],
-  );
-
-  const allTags = useMemo(
-    () => [...new Set(notes.flatMap((note) => note.tags))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
-    [notes],
   );
 
   const counts = useMemo(
@@ -552,31 +539,90 @@ export default function Home() {
     return notes
       .filter((note) => {
         const haystack = `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN');
-        return !normalizedQuery || haystack.includes(normalizedQuery);
+        return (!normalizedQuery || haystack.includes(normalizedQuery)) && tagFilters.every((tag) => note.tags.includes(tag));
       });
-  }, [notes, query]);
+  }, [notes, query, tagFilters]);
 
-  const folderTree = useMemo(() => buildFolderTree(filteredNotes, folderPaths), [filteredNotes, folderPaths]);
+  const folderTree = useMemo(() => {
+    const visibleFolders = query.trim() || tagFilters.length
+      ? [...new Set(filteredNotes.flatMap((note) => { const parts = note.path.split('/').slice(0, -1); return parts.map((_, index) => parts.slice(0, index + 1).join('/')); }))]
+      : folderPaths;
+    return buildFolderTree(filteredNotes, visibleFolders);
+  }, [filteredNotes, folderPaths, query, tagFilters]);
 
   const selectedNote =
     filteredNotes.find((note) => note.id === selectedId) ||
-    filteredNotes[0] ||
-    notes.find((note) => note.id === selectedId);
+    filteredNotes[0];
   const editorBody = selectedNote
     ? (editorDrafts[selectedNote.id] ?? selectedNote.body)
     : '';
   const editorDirty = Boolean(selectedNote && editorBody !== selectedNote.body);
-  const oldestAttention = notes
-    .filter((note) => note.status === 'expired' || note.status === 'stale')
-    .sort((a, b) => b.ageDays - a.ageDays)[0];
+  const canDropToRoot = Boolean(draggedItem?.path.includes('/') && !fileBusy && !savingNote && !feishuBusy && !Object.keys(editorDrafts).length);
+  function updateDraggedItem(item: DraggedItem | null) {
+    setDraggedItem(item);
+    setRootDropActive(false);
+  }
+
+  function toggleSidebar() {
+    const collapse = !sidebarHidden;
+    window.localStorage.setItem(SIDEBAR_KEY, String(collapse));
+    window.dispatchEvent(new Event(SIDEBAR_EVENT));
+    if (isMobile) setMobileReaderOpen(collapse);
+  }
 
   function toggleFolder(path: string) {
+    setSelectedFolder(path);
     setExpandedFolders((current) => {
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
       else next.add(path);
       return next;
     });
+  }
+
+  function completeFileAction(result: FileResult, action: string) {
+    lastSyncRef.current = result.index.generatedAt;
+    setRawNotes(result.index.notes.map((note) => ({ ...note, modified: new Date(note.modified) })));
+    setFolderPaths(result.index.folders);
+    const folder = action.endsWith('-folder') ? result.path : result.path.split('/').slice(0, -1).join('/');
+    setSelectedFolder(folder);
+    setExpandedFolders((current) => {
+      const remap = (item: string) => result.previousPath && (item === result.previousPath || item.startsWith(`${result.previousPath}/`)) ? result.path + item.slice(result.previousPath.length) : item;
+      const next = new Set([...current].map(remap));
+      const parts = folder.split('/');
+      parts.forEach((_, index) => next.add(parts.slice(0, index + 1).join('/')));
+      return next;
+    });
+    if (action === 'move-folder' || action === 'rename-folder') {
+      if (selectedNote && result.previousPath && selectedNote.path.startsWith(`${result.previousPath}/`)) setSelectedId(`local-${result.path}${selectedNote.path.slice(result.previousPath.length)}`);
+    } else if (action !== 'create-folder') { setSelectedId(`local-${result.path}`); setMobileReaderOpen(true); }
+    setQuery('');
+    if (action === 'create-note') setTagFilters([]);
+  }
+
+  async function moveTreeItem(source: string, kind: 'note' | 'folder', folder: string) {
+    if (fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length) return;
+    setFileBusy(true); setFileError('');
+    try {
+      const action = kind === 'folder' ? 'move-folder' : 'move-note';
+      const response = await fetch('/local-api/files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...workspaceHeaders() }, body: JSON.stringify({ action, path: source, folder }) });
+      const result = await response.json() as FileResult & { error?: string };
+      if (!response.ok) throw new Error(result.error || '移动失败。');
+      completeFileAction(result, action);
+    } catch (failure) { setFileError(failure instanceof Error ? failure.message : '移动失败。'); }
+    finally { setFileBusy(false); }
+  }
+
+  async function renameTreeItem(source: string, kind: 'note' | 'folder', name: string) {
+    if (fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length) throw new Error('请等待笔记保存或同步完成后重命名。');
+    setFileBusy(true);
+    try {
+      const action = kind === 'folder' ? 'rename-folder' : 'rename-note';
+      const response = await fetch('/local-api/files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...workspaceHeaders() }, body: JSON.stringify({ action, path: source, name }) });
+      const result = await response.json() as FileResult & { error?: string };
+      if (!response.ok) throw new Error(result.error || '重命名失败。');
+      completeFileAction(result, action);
+    } finally { setFileBusy(false); }
   }
 
   function updateReaderWidth(nextWidth: number) {
@@ -586,27 +632,41 @@ export default function Home() {
   }
 
   async function saveNoteTags(note: Note, tags: string[]) {
-    const response = await fetch('/local-api/notes/tags', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: note.path, tags }),
-    });
-    const result = (await response.json()) as { error?: string; raw?: string; modified?: string; tags?: string[] };
-    if (!response.ok || !result.raw || !result.modified) {
-      throw new Error(result.error || '本地标签服务没有响应，请重新启动知识库网站。');
-    }
+    setFileBusy(true);
+    try {
+      const response = await fetch('/local-api/notes/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...workspaceHeaders() },
+        body: JSON.stringify({ path: note.path, tags }),
+      });
+      const result = (await response.json()) as { error?: string; raw?: string; modified?: string; tags?: string[] };
+      if (!response.ok || !result.raw || !result.modified) {
+        throw new Error(result.error || '本地标签服务没有响应，请重新启动知识库网站。');
+      }
 
-    setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
-      ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
-      : rawNote));
-    setMessage(`已保存 ${result.tags?.length || 0} 个标签到「${note.title}」。`);
+      setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
+        ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+        : rawNote));
+    } finally { setFileBusy(false); }
+  }
+
+  async function manageTags(action: 'rename-tag' | 'delete-tag', tag: string, name?: string) {
+    setFileBusy(true);
+    try {
+      const response = await fetch('/local-api/files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...workspaceHeaders() }, body: JSON.stringify({ action, tag, name }) });
+      const result = await response.json() as { error?: string; index: FileResult['index'] };
+      if (!response.ok) throw new Error(result.error || '标签更新失败。');
+      lastSyncRef.current = result.index.generatedAt;
+      setRawNotes(result.index.notes.map((note) => ({ ...note, modified: new Date(note.modified) })));
+      setTagFilters((current) => [...new Set(current.flatMap((item) => item !== tag ? [item] : action === 'rename-tag' && name ? [name.trim().replace(/^#+/, '').trim().slice(0, 32)] : []))]);
+    } finally { setFileBusy(false); }
   }
 
   async function persistNoteContent(note: Note, body: string) {
     const localWorkspace = isLocalWorkspace();
     const response = await fetch(localWorkspace ? '/local-api/notes/content' : '/api/note-overrides', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...workspaceHeaders() },
       body: JSON.stringify(localWorkspace
         ? { path: note.path, body }
         : { path: note.path, raw: replaceNoteBody(note.raw, body) }),
@@ -627,7 +687,6 @@ export default function Home() {
       delete next[note.id];
       return next;
     });
-    setMessage(`已自动保存「${note.title}」。`);
   }
 
   async function flushPendingNoteSaves() {
@@ -671,22 +730,28 @@ export default function Home() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" onKeyDownCapture={(event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        if (selectedNote && editorDirty && !feishuBusy && !fileBusy) saveNoteContent(selectedNote, editorBody);
+      }
+    }}>
       <header className="topbar">
-        <div className="brand-wrap">
-          <div className="brand-mark" aria-hidden="true"><BookOpen size={20} strokeWidth={2.2} /></div>
-          <div><div className="brand-name">知序</div><div className="brand-subtitle">高效学习 · 快速整理</div></div>
+        <div className="top-navigation">
+          <button className="quiet-control sidebar-toggle" onClick={toggleSidebar} title={sidebarHidden ? '展开目录' : '收起目录'} aria-label={sidebarHidden ? '展开目录' : '收起目录'} aria-expanded={!sidebarHidden} aria-controls="collection-panel">{sidebarHidden ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+          <label className="search-box">
+            <Search size={17} aria-hidden="true" />
+            <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setSidebarView('files'); }} placeholder="搜索标题、正文或标签…" aria-label="搜索笔记" />
+            <kbd>{shortcutModifier} K</kbd>
+          </label>
         </div>
 
-        <label className="search-box">
-          <Search size={17} aria-hidden="true" />
-          <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、正文或标签…" aria-label="搜索笔记" />
-          <kbd>{shortcutModifier} K</kbd>
-        </label>
-
         <div className="top-actions">
-          <FeishuSyncPanel notePath={selectedNote?.path} dirty={editorDirty || savingNote || Object.keys(editorDrafts).length > 0} onBusyChange={setFeishuBusy} />
-          <div className="privacy-pill" title="笔记保存在本机，点击飞书同步时传输所选内容"><ShieldCheck size={15} /><span>本地存储</span></div>
+          <TagManager note={selectedNote} notes={notes} filters={tagFilters}
+            onFilter={(tags) => { setTagFilters(tags); setSidebarView('files'); setExpandedFolders(new Set(folderPaths)); }}
+            disabled={fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length > 0}
+            onSave={async (tags) => { if (selectedNote) await saveNoteTags(selectedNote, tags); }} onManage={manageTags} />
+          <FeishuSyncPanel notePath={selectedNote?.path} folders={folderPaths} notePaths={notes.map((note) => note.path)} selectedFolder={selectedFolder} dirty={fileBusy || editorDirty || savingNote || Object.keys(editorDrafts).length > 0} onBusyChange={setFeishuBusy} />
           <button className="top-refresh-button" title="重新读取本地笔记" aria-label="重新读取本地笔记" onClick={() => window.location.reload()}>
             <RefreshCcw size={17} />
           </button>
@@ -694,127 +759,111 @@ export default function Home() {
       </header>
 
       <div className="workspace">
-        <main className="main-content">
-          <section className="collection-panel">
+        <main className={`main-content ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+          <section className="collection-panel" id="collection-panel">
             <div className="collection-head">
               <div>
-                <div className="breadcrumb"><span>知识库</span><ChevronRight size={13} /><span>文件</span></div>
-                <h1>我的笔记</h1>
-                <p>{filteredNotes.length} 个 Markdown 文件</p>
-              </div>
-              <details className="review-settings">
-                <summary title="时效提醒设置" aria-label="时效提醒设置"><Settings2 size={15} /></summary>
-                <div className="review-settings-panel">
-                  <strong>时效提醒</strong>
-                  <label>默认复查周期
-                    <select value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))} aria-label="默认复查周期">
-                      <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
-                    </select>
-                  </label>
-                  <p>只用于没有单独设置复查周期的笔记。</p>
+                <div className={`breadcrumb root-drop-breadcrumb ${rootDropActive && canDropToRoot ? 'drop-target' : ''}`}
+                  title="将文件或文件夹拖到这里，移至知识库根目录"
+                  onDragOver={(event) => {
+                    if (!canDropToRoot) { event.dataTransfer.dropEffect = 'none'; return; }
+                    event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setRootDropActive(true);
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRootDropActive(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault(); event.stopPropagation();
+                    if (canDropToRoot && draggedItem) void moveTreeItem(draggedItem.path, draggedItem.kind, '');
+                    updateDraggedItem(null);
+                  }}>
+                  <span>知识库</span><ChevronRight size={13} /><span>{canDropToRoot ? '移至根目录' : '文件'}</span>
                 </div>
-              </details>
+                <h1>我的笔记</h1>
+              </div>
+              <div className="collection-head-actions">
+                <FileActions folders={folderPaths} selectedFolder={selectedFolder}
+                  disabled={fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length > 0}
+                  onBusyChange={setFileBusy} onComplete={completeFileAction} />
+                <LocalFolderPicker path={workspacePath} disabled={fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length > 0} onBusyChange={setFileBusy} />
+                <details className="review-settings">
+                  <summary title="时效提醒设置" aria-label="时效提醒设置"><Settings2 size={15} /></summary>
+                  <div className="review-settings-panel">
+                    <strong>时效提醒</strong>
+                    <p>{counts.attention} 篇待复查 · {counts.soon} 篇即将到期</p>
+                    <label>默认复查周期
+                      <select value={defaultInterval} onChange={(event) => setDefaultInterval(Number(event.target.value))} aria-label="默认复查周期">
+                        <option value={30}>30 天</option><option value={60}>60 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>365 天</option>
+                      </select>
+                    </label>
+                    <p>只用于没有单独设置复查周期的笔记。</p>
+                  </div>
+                </details>
+              </div>
             </div>
 
-            {(counts.attention > 0 || counts.soon > 0) && (
-              <div className="review-alert">
-                <CalendarClock size={15} />
-                <span>
-                  <strong>复查提醒</strong>
-                  <small>{counts.attention > 0 ? `${counts.attention} 篇需要复查` : ''}{counts.attention > 0 && counts.soon > 0 ? ' · ' : ''}{counts.soon > 0 ? `${counts.soon} 篇即将到期` : ''}{counts.attention > 0 ? ` · 最旧 ${oldestAttention?.ageDays || 0} 天` : ''}</small>
-                </span>
-              </div>
-            )}
+            {fileError && <p className="editor-error" role="alert">{fileError}</p> }
 
-            <div className="list-heading"><span>名称</span><small>信息</small></div>
+            {indexError && <p className="editor-error" role="alert">{indexError}</p>}
 
-            <div className="note-list">
+            <div className="collection-view-switch" role="group" aria-label="左侧导航内容">
+              <button type="button" aria-pressed={sidebarView === 'files'} aria-controls="note-file-list" onClick={() => setSidebarView('files')}>文件</button>
+              <button type="button" aria-pressed={sidebarView === 'outline'} aria-controls="note-outline-panel" disabled={!selectedNote} onClick={() => setSidebarView('outline')}>大纲</button>
+            </div>
+
+            <div className="note-list" id="note-file-list" hidden={sidebarView !== 'files' && Boolean(selectedNote)}>
               <FileTree
                 root={folderTree}
+                dragged={draggedItem}
+                setDragged={updateDraggedItem}
                 expanded={expandedFolders}
                 selectedId={selectedNote?.id}
+                selectedFolder={selectedFolder}
+                disabled={fileBusy || savingNote || feishuBusy || Object.keys(editorDrafts).length > 0}
+                onMove={(source, kind, folder) => void moveTreeItem(source, kind, folder)}
+                onRename={renameTreeItem}
                 onToggle={toggleFolder}
-                onSelect={(note) => { setSelectedId(note.id); setMobileReaderOpen(true); }}
+                onSelect={(note) => { setSelectedId(note.id); setSelectedFolder(note.path.split('/').slice(0, -1).join('/')); setSidebarView('outline'); setMobileReaderOpen(true); }}
               />
               {!filteredNotes.length && (
                 <div className="empty-state">
                   {notes.length ? <Search size={24} /> : <FolderOpen size={24} />}
                   <strong>{notes.length ? '没有匹配的笔记' : '知识库中没有 Markdown 笔记'}</strong>
-                  <span>{notes.length ? '换个关键词或清除筛选条件试试。' : '请直接在本地目录中创建 .md 文件，页面会自动更新。'}</span>
-                  {notes.length > 0 && <button onClick={() => setQuery('')}>清除筛选</button>}
+                  <span>{notes.length ? '换个关键词或清除筛选条件试试。' : '点击上方“新建笔记”开始记录，也可以先创建文件夹。'}</span>
+                  {notes.length > 0 && <button onClick={() => { setQuery(''); setTagFilters([]); }}>清除筛选</button>}
                 </div>
               )}
             </div>
+            {sidebarView === 'outline' && selectedNote && (
+              <NoteOutline key={selectedNote.id} title={selectedNote.title} markdown={editorBody}
+                readerRef={readerRef} onNavigate={() => setMobileReaderOpen(true)} />
+            )}
           </section>
 
           <section
+            ref={readerRef}
             className={`reader-panel ${mobileReaderOpen ? 'mobile-reader-open' : ''}`}
             style={{ '--reader-page-width': `${readerWidth}px` } as CSSProperties}
           >
             {selectedNote ? (
               <>
                 <header className="reader-head">
-                  <button className="mobile-reader-back" onClick={() => setMobileReaderOpen(false)} aria-label="返回笔记列表"><X size={18} />返回列表</button>
+                  <button className="mobile-reader-back" onClick={() => { window.localStorage.setItem(SIDEBAR_KEY, 'false'); window.dispatchEvent(new Event(SIDEBAR_EVENT)); setSidebarView('files'); setMobileReaderOpen(false); }} aria-label="返回笔记列表"><X size={18} />返回列表</button>
                   <div className="reader-path">{selectedNote.path.split('/').map((part, index, parts) => <span key={`${part}-${index}`}>{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>)}</div>
                   <div className="reader-title-row">
                     <div><h2>{selectedNote.title}</h2></div>
                     <div className="reader-actions">
-                      {readerMode === 'edit' && (
-                        <button
-                          className="reader-save-action"
-                          title={editorDirty ? `保存笔记（${shortcutModifier}+S）` : '笔记已保存'}
-                          onClick={() => void saveNoteContent(selectedNote, editorBody)}
-                          disabled={!editorDirty || savingNote || feishuBusy}
-                          aria-label={savingNote ? '正在保存笔记' : '保存笔记'}
-                        >
-                          <Save size={17} />
-                        </button>
-                      )}
-                      <TagEditor key={selectedNote.id} note={selectedNote} allTags={allTags} onSave={(tags) => saveNoteTags(selectedNote, tags)} />
+                      <ReaderWidthControl width={readerWidth} onChange={updateReaderWidth} />
                       <MetadataInfo note={selectedNote} />
-                      <button title="重新读取笔记" onClick={() => window.location.reload()} aria-label="重新读取知识库"><RefreshCcw size={17} /></button>
                     </div>
                   </div>
                   <div className="reader-workspace-controls">
-                    <div className="mode-switch" aria-label="笔记模式">
-                      <button className={readerMode === 'view' ? 'active' : ''} onClick={() => setReaderMode('view')}><Eye size={14} />查看</button>
-                      <button
-                        className={readerMode === 'edit' ? 'active' : ''}
-                        title="快捷输入：# 标题、- 无序列表、1. 有序列表、> 引用，输入后按空格"
-                        onClick={() => setReaderMode('edit')}
-                      ><Pencil size={14} />编辑{editorDirty && <i aria-label="有未保存修改" />}</button>
-                    </div>
-                    <div className="reader-width-control" title="拖动或输入数字调整笔记页宽">
-                      <Maximize2 size={14} />
-                      <input
-                        className="width-slider"
-                        type="range"
-                        min={480}
-                        max={1600}
-                        step={1}
-                        value={readerWidth}
-                        onChange={(event) => updateReaderWidth(Number(event.target.value))}
-                        aria-label="拖动调整笔记页宽"
-                      />
-                      <label className="width-number">
-                        <input
-                          type="number"
-                          min={480}
-                          max={1600}
-                          value={readerWidth}
-                          onChange={(event) => {
-                            const nextWidth = Number(event.target.value);
-                            if (Number.isFinite(nextWidth)) updateReaderWidth(nextWidth);
-                          }}
-                          aria-label="输入笔记页宽像素"
-                        />
-                        <span>px</span>
-                      </label>
-                    </div>
+                    <div className="editor-save-status" role="status"><Check size={14} /><span>{editorError ? '保存失败' : savingNote ? '正在保存…' : editorDirty ? '等待保存' : '已保存'}</span></div>
+
                   </div>
                 </header>
 
-                {readerMode === 'view' && (selectedNote.status === 'expired' || selectedNote.status === 'stale') && (
+                {(selectedNote.status === 'expired' || selectedNote.status === 'stale') && (
                   <div className={`stale-callout ${selectedNote.status === 'expired' ? 'expired-callout' : ''}`}>
                     <AlertTriangle size={19} />
                     <div>
@@ -824,51 +873,28 @@ export default function Home() {
                   </div>
                 )}
 
-                {readerMode === 'view' && selectedNote.status === 'soon' && (
+                {selectedNote.status === 'soon' && (
                   <div className="stale-callout soon-callout"><CalendarClock size={19} /><div><strong>即将进入复查周期</strong><p>建议在未来 {Math.max(0, selectedNote.daysUntilDue)} 天内重新确认这篇笔记。</p></div></div>
                 )}
 
-                {readerMode === 'view' ? (
-                  <article className="markdown-body">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[rehypeRaw]}
-                      urlTransform={(url, key) => key === 'src'
-                        ? resolveNoteImageUrl(selectedNote.path, url)
-                        : defaultUrlTransform(url)}
-                      components={{
-                        a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
-                        img: ({ src, alt, ...props }) => <img {...props} src={src} alt={alt || ''} loading="lazy" />,
-                        input: (props) => <input {...props} disabled={props.type === 'checkbox'} />,
-                      }}
-                    >
-                      {editorBody}
-                    </ReactMarkdown>
-                  </article>
-                ) : (
-                  <section
-                    className="markdown-editor"
-                    aria-label={`编辑 ${selectedNote.title}`}
-                    onKeyDownCapture={(event) => {
-                      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-                        event.preventDefault();
-                        void saveNoteContent(selectedNote, editorBody);
-                      }
+                <section
+                  className="markdown-editor"
+                  aria-label={`编辑 ${selectedNote.title}`}
+
+                >
+                  <MarkdownRichEditor
+                    key={selectedNote.id}
+                    markdown={editorBody}
+                    notePath={selectedNote.path}
+                    readOnly={feishuBusy || fileBusy}
+                    onChange={(nextMarkdown) => {
+                      setEditorDrafts((current) => ({ ...current, [selectedNote.id]: nextMarkdown }));
+                      setEditorError('');
+                      queueNoteSave(selectedNote, nextMarkdown, 600);
                     }}
-                  >
-                    <MarkdownRichEditor
-                      key={selectedNote.id}
-                      markdown={editorBody}
-                      notePath={selectedNote.path}
-                      onChange={(nextMarkdown) => {
-                        setEditorDrafts((current) => ({ ...current, [selectedNote.id]: nextMarkdown }));
-                        setEditorError('');
-                        queueNoteSave(selectedNote, nextMarkdown, 600);
-                      }}
-                    />
-                    {editorError && <p className="editor-error">{editorError}</p>}
-                  </section>
-                )}
+                  />
+                  {editorError && <p className="editor-error">{editorError}</p>}
+                </section>
 
               </>
             ) : (
@@ -878,7 +904,6 @@ export default function Home() {
         </main>
       </div>
 
-      <div className="toast" role="status" aria-live="polite"><ShieldCheck size={15} /><span>{message}</span></div>
     </div>
   );
 }

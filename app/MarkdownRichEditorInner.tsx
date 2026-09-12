@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FC } from 'react';
+import { useEffect, useMemo, useRef, useState, type FC } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { usePublisher } from '@mdxeditor/gurx';
 import { $createParagraphNode, $getNodeByKey, $isElementNode } from 'lexical';
@@ -10,6 +10,7 @@ import {
   $createImageNode,
   $isImageNode,
   MDXEditor,
+  type MDXEditorMethods,
   addImportVisitor$,
   codeBlockPlugin,
   codeMirrorPlugin,
@@ -28,10 +29,13 @@ import {
   thematicBreakPlugin,
 } from '@mdxeditor/editor';
 import { resolveNoteImageUrl, uploadNoteImage } from './note-images';
+import { editorContextMenuPlugin } from './EditorContextMenu';
+import { cleanFeishuMarkdown } from './remark-clean-feishu';
 
 export type MarkdownRichEditorProps = {
   markdown: string;
   notePath: string;
+  readOnly?: boolean;
   onChange: (markdown: string) => void;
 };
 
@@ -214,9 +218,20 @@ function ImageEditToolbar({
   );
 }
 
-export default function MarkdownRichEditorInner({ markdown, notePath, onChange }: MarkdownRichEditorProps) {
+export default function MarkdownRichEditorInner({ markdown, notePath, readOnly = false, onChange }: MarkdownRichEditorProps) {
+  const editorRef = useRef<MDXEditorMethods>(null);
+  const [sourceFallback, setSourceFallback] = useState(false);
+  const cleanMarkdown = useMemo(() => cleanFeishuMarkdown(markdown), [markdown]);
+  const lastMarkdown = useRef(cleanMarkdown);
+  useEffect(() => {
+    if (lastMarkdown.current !== cleanMarkdown) {
+      lastMarkdown.current = cleanMarkdown;
+      editorRef.current?.setMarkdown(cleanMarkdown);
+    }
+  }, [cleanMarkdown]);
   const plugins = useMemo(() => [
     alignedImageHtmlPlugin(),
+    editorContextMenuPlugin(),
     headingsPlugin(),
     listsPlugin(),
     quotePlugin(),
@@ -244,16 +259,31 @@ export default function MarkdownRichEditorInner({ markdown, notePath, onChange }
         json: 'JSON',
         python: 'Python',
         bash: 'Shell',
+        java: 'Java',
+        sql: 'SQL',
+        xml: 'XML',
+        yaml: 'YAML',
       },
     }),
     markdownShortcutPlugin(),
   ], [notePath]);
 
+  if (sourceFallback) return <div className="editor-source-fallback">
+    <p role="status">这篇笔记包含暂不支持的排版，已保留完整原文，可继续编辑。</p>
+    <textarea aria-label="笔记原文" value={cleanMarkdown} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
+  </div>;
+
   return (
     <MDXEditor
-      markdown={markdown}
+      ref={editorRef}
+      markdown={cleanMarkdown}
+      readOnly={readOnly}
+      onError={() => queueMicrotask(() => setSourceFallback(true))}
       onChange={(nextMarkdown, initialNormalize) => {
-        if (!initialNormalize) onChange(nextMarkdown);
+        if (!initialNormalize) {
+          lastMarkdown.current = nextMarkdown;
+          onChange(nextMarkdown);
+        }
       }}
       className="zhixu-rich-editor"
       contentEditableClassName="zhixu-rich-content"
