@@ -7,7 +7,7 @@ export const requiredProjectFiles = [
   'package.json', 'package-lock.json', 'vite.config.ts', 'next.config.ts',
   'tsconfig.json', '.openai/hosting.json',
   ...[
-    'start-local', 'check-project', 'sync-notes', 'local-config', 'local-platform',
+    'start-local', 'check-project', 'check-dependencies', 'sync-notes', 'local-config', 'local-platform',
     'local-workspace', 'local-files', 'note-tags', 'feishu-sync',
     'feishu-content', 'feishu-markdown', 'feishu-media',
   ].map((name) => `scripts/${name}.mjs`),

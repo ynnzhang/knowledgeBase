@@ -51,6 +51,7 @@ KNOWLEDGE_BASE_API_PORT=4312
 
 ## 常见问题
 
+- 更新后报 `Failed to resolve import "micromark-extension-cjk-friendly"` 或其他新增 npm 包缺失：先按 **Ctrl+C** 停止服务，在项目目录执行 `npm ci`，完成后运行 `npm run local`。这是本机依赖未更新，笔记目录无需调整。新版启动器及 `npm run dev` / `npm run dev:site` 会核对已安装的直接依赖与锁定版本，缺失或版本不符时自动执行 `npm ci`；依赖完整时跳过安装。若检测到当前项目仍在运行，会提示先停止旧服务，避免 Windows 文件占用。
 - 找不到 Node.js：Windows 检查 Node.js 和 npm 是否已加入 PATH，安装后重新打开窗口；Mac 启动入口还会检查 Homebrew 的常见安装位置及默认 nvm 安装。其他版本管理器可在其已配置的终端运行 `npm run local`。
 - 端口占用：网站使用 3000，编辑服务默认使用 4312。关闭已有服务，或修改编辑服务端口后重启。两个系统重复双击启动文件都会复用同一项目、同一目录的已运行服务。
 - 无法读取笔记：检查 `.env.local` 路径和目录权限；macOS 询问终端访问文稿或桌面文件夹时，允许访问所选笔记目录。

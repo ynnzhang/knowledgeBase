@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +21,7 @@ if (process.argv.includes('--check')) {
 
 const { localApiPort, notesRoot, projectRoot } = await import('./local-config.mjs');
 const { browserCommand, npmCommand, sameLocalPath, stopProcessTree } = await import('./local-platform.mjs');
+const { ensureDependencies } = await import('./check-dependencies.mjs');
 
 const siteUrl = 'http://localhost:3000/';
 const apiUrl = `http://127.0.0.1:${localApiPort}/health`;
@@ -69,6 +69,13 @@ function openBrowser() {
 async function start() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 13)) throw new Error('Node.js 版本过低，需要 22.13 或更高版本。');
+  await ensureDependencies({ projectRoot, runNpm, isStopping: () => stopping, beforeInstall: async () => {
+    const services = await Promise.all([health(apiUrl), health(`${siteUrl}local-api/health`)]);
+    if (services.some((service) => service?.service === 'zhixu-notes' && sameLocalPath(service.projectRoot, projectRoot))) {
+      throw new Error('当前项目的服务仍在运行，请先在原启动窗口按 Ctrl+C 停止服务，再重新启动以安装更新后的依赖。');
+    }
+  } });
+  if (stopping || process.argv.includes('--prepare')) return;
   const existingApi = await health(apiUrl);
   if (existingApi && !matchesProject(existingApi)) {
     throw new Error(`端口 ${localApiPort} 正被其他服务或知识库使用，请修改 .env.local 中的 KNOWLEDGE_BASE_API_PORT。`);
@@ -80,13 +87,6 @@ async function start() {
   }
 
   if (stopping) return;
-  if (!existsSync(path.join(projectRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'vinext.cmd' : 'vinext'))) {
-    console.log('首次启动需要安装项目依赖，请稍候……');
-    const code = await runNpm(['ci']);
-    if (stopping) return;
-    if (code !== 0) throw new Error('依赖安装失败，请检查网络或 Node.js 环境。');
-  }
-
   console.log(`知序正在启动\n笔记目录：${notesRoot}\n本地地址：${siteUrl}\n请保留此窗口，按 Ctrl+C（Mac 为 Control+C）停止服务。`);
   let finished = false;
   const completion = runNpm(['run', matchesProject(existingApi) ? 'dev:site' : 'dev'])
