@@ -1,13 +1,7 @@
 'use client';
-
-import dynamic from 'next/dynamic';
+import { lazy, Suspense } from 'react';
 import type { MarkdownRichEditorProps } from './MarkdownRichEditorInner';
-
-const ClientEditor = dynamic(() => import('./MarkdownRichEditorInner'), {
-  ssr: false,
-  loading: () => <div className="rich-editor-loading">正在打开笔记…</div>,
-});
-
+const ClientEditor = lazy(() => import('./MarkdownRichEditorInner'));
 export default function MarkdownRichEditor(props: MarkdownRichEditorProps) {
-  return <ClientEditor {...props} />;
+  return <Suspense fallback={<div className="rich-editor-loading">正在打开笔记…</div>}><ClientEditor {...props} /></Suspense>;
 }

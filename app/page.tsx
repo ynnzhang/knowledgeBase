@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent } from 'react';
 import { parse as parseYaml } from 'yaml';
 import MarkdownRichEditor from './MarkdownRichEditor';
+import { treeWindow } from './tree-window.mjs';
 import NoteOutline from './NoteOutline';
 import FeishuSyncPanel from './FeishuSyncPanel';
 import TagManager from './TagManager';
@@ -43,6 +44,10 @@ type RawNote = {
   name: string;
   path: string;
   raw: string;
+  version?: string;
+  bodyLoaded?: boolean;
+  summaryRaw?: string;
+  wordCount?: number;
   modified: Date;
   source: 'local';
 };
@@ -74,6 +79,11 @@ type FolderNode = {
 type NotesIndexPayload = {
   workspace?: string;
   generatedAt?: string;
+  epoch?: string;
+  revision?: number;
+  full?: boolean;
+  removed?: string[];
+  engine?: string;
   error?: string | null;
   folders?: string[];
   notes?: Array<Omit<RawNote, 'modified'> & { modified: string }>;
@@ -83,6 +93,7 @@ type NoteOverridePayload = {
   overrides?: Array<{ path: string; raw: string; updated_at: string }>;
 };
 
+const parsedNoteCache = new WeakMap<RawNote, { interval: number; note: Note }>();
 const DAY = 86_400_000;
 const READER_WIDTH_STORAGE_KEY = 'zhixu.reader-width';
 const READER_WIDTH_EVENT = 'zhixu-reader-width-change';
@@ -209,7 +220,7 @@ function parseNote(rawNote: RawNote, defaultInterval: number): Note {
   else if (ageDays > reviewInterval) status = 'stale';
   else if (daysUntilDue <= 14 || ageDays >= reviewInterval * 0.8) status = 'soon';
 
-  const plain = stripMarkdown(body);
+  const plain = rawNote.bodyLoaded === false ? '' : stripMarkdown(body);
   const folderParts = rawNote.path.split('/');
   const folder = folderParts.length > 1 ? folderParts.slice(0, -1).join(' / ') : '根目录';
 
@@ -228,7 +239,7 @@ function parseNote(rawNote: RawNote, defaultInterval: number): Note {
     reviewInterval,
     daysUntilDue,
     status,
-    wordCount: plain.replace(/\s/g, '').length,
+    wordCount: rawNote.wordCount ?? plain.replace(/\s/g, '').length,
   };
 }
 
@@ -355,49 +366,60 @@ function FileTree({
   }
   function endDrag() { setDragged(null); setDropTarget(null); }
 
-  function renderFolder(folder: FolderNode, depth: number) {
-    const isOpen = expanded.has(folder.path);
-    const folders = [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-    const files = [...folder.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-
-    return (
-      <div key={folder.path} className="tree-folder">
-        <button className={`folder-row ${selectedFolder === folder.path ? 'selected-folder' : ''} ${dropTarget === folder.path ? 'drop-target' : ''}`} draggable={!disabled} onDragStart={(event) => startDrag(event, folder.path, 'folder')} onDragEnd={endDrag} {...dropHandlers(folder.path)} {...renameHandlers(folder.path, 'folder')} title={`${folder.name} · 右键或 F2 重命名`} aria-pressed={selectedFolder === folder.path} onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18 }}>
-          <ChevronDown className={isOpen ? 'tree-chevron open' : 'tree-chevron'} size={14} />
-          {isOpen ? <FolderOpen size={17} /> : <Folder size={17} />}
-          <span>{folder.name}</span>
-        </button>
-        {isOpen && (
-          <div>
-            {folders.map((child) => renderFolder(child, depth + 1))}
-            {files.map((note) => (
-              <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
-                <button className="file-open" {...renameHandlers(note.path, 'note')} draggable={!disabled} onDragStart={(event) => startDrag(event, note.path, 'note')} onDragEnd={endDrag} onClick={() => onSelect(note)} style={{ paddingLeft: 31 + depth * 18 }}>
-                  <FileText size={16} />
-                  <span title={note.name}>{note.name}</span>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
+  const treeRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 600 });
+  const rows = useMemo(() => {
+    const result: Array<{ folder?: FolderNode; note?: Note; depth: number }> = [];
+    function visit(folder: FolderNode, depth: number) {
+      for (const child of [...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+        result.push({ folder: child, depth });
+        if (expanded.has(child.path)) visit(child, depth + 1);
+      }
+      for (const note of [...folder.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) result.push({ note, depth });
+    }
+    visit(root, 0); return result;
+  }, [root, expanded]);
+  useEffect(() => {
+    const scroll = treeRef.current?.parentElement;
+    if (!scroll) return;
+    const update = () => setViewport({ top: scroll.scrollTop, height: scroll.clientHeight || 600 });
+    scroll.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update); observer.observe(scroll); update();
+    return () => { observer.disconnect(); scroll.removeEventListener('scroll', update); };
+  }, []);
+  const virtual = rows.length > 200;
+  const window = treeWindow(rows.length, viewport.top, viewport.height);
+  const start = virtual ? window.start : 0;
+  const visible = virtual ? rows.slice(start, window.end) : rows;
+  function navigateRows(event: React.KeyboardEvent) {
+    const button = (event.target as HTMLElement).closest<HTMLElement>('[data-tree-row]');
+    if (!button || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = Number(button.dataset.treeRow);
+    const next = Math.max(0, Math.min(rows.length - 1, event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : current + (event.key === 'ArrowDown' ? 1 : -1)));
+    const scroll = treeRef.current?.parentElement;
+    if (scroll && virtual) { if (next * 38 < scroll.scrollTop) scroll.scrollTo({ top: next * 38 }); else if ((next + 1) * 38 > scroll.scrollTop + scroll.clientHeight) scroll.scrollTo({ top: (next + 1) * 38 - scroll.clientHeight }); setViewport({ top: scroll.scrollTop, height: scroll.clientHeight }); }
+    requestAnimationFrame(() => treeRef.current?.querySelector<HTMLElement>(`[data-tree-row="${next}"]`)?.focus({ preventScroll: virtual }));
   }
-
-  const rootFolders = [...root.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  const rootFiles = [...root.notes].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-
   return (
-    <div className="file-tree" role="tree" aria-label="知识库文件夹和笔记">
+    <div ref={treeRef} className="file-tree" role="tree" aria-label="知识库文件夹和笔记" onKeyDown={navigateRows}>
       {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} onDelete={onDelete} />}
-      {rootFolders.map((folder) => renderFolder(folder, 0))}
-      {rootFiles.map((note) => (
-        <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'}>
-          <button className="file-open" {...renameHandlers(note.path, 'note')} draggable={!disabled} onDragStart={(event) => startDrag(event, note.path, 'note')} onDragEnd={endDrag} onClick={() => onSelect(note)}>
-            <FileText size={16} /><span title={note.name}>{note.name}</span>
-          </button>
+      <div style={virtual ? { height: window.total, position: 'relative' } : undefined}>
+        <div style={virtual ? { position: 'absolute', top: window.offset, left: 0, right: 0 } : undefined}>
+          {visible.map(({ folder, note, depth }, index) => folder ? (
+            <button key={`folder-${folder.path}`} data-tree-row={start + index} role="treeitem" aria-level={depth + 1} aria-expanded={expanded.has(folder.path)} className={`folder-row ${selectedFolder === folder.path ? 'selected-folder' : ''} ${dropTarget === folder.path ? 'drop-target' : ''}`} draggable={!disabled} onDragStart={(event) => startDrag(event, folder.path, 'folder')} onDragEnd={endDrag} {...dropHandlers(folder.path)} {...renameHandlers(folder.path, 'folder')} title={`${folder.name} · 右键或 F2 重命名`} aria-selected={selectedFolder === folder.path} onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18, height: 38 }}>
+              <ChevronDown className={expanded.has(folder.path) ? 'tree-chevron open' : 'tree-chevron'} size={14} />
+              {expanded.has(folder.path) ? <FolderOpen size={17} /> : <Folder size={17} />}<span>{folder.name}</span>
+            </button>
+          ) : note ? (
+            <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'} style={{ height: 38 }}>
+              <button data-tree-row={start + index} role="treeitem" aria-level={depth + 1} aria-selected={selectedId === note.id} className="file-open" {...renameHandlers(note.path, 'note')} draggable={!disabled} onDragStart={(event) => startDrag(event, note.path, 'note')} onDragEnd={endDrag} onClick={() => onSelect(note)} style={{ paddingLeft: 13 + depth * 18 }}>
+                <FileText size={16} /><span title={note.name}>{note.name}</span>
+              </button>
+            </div>
+          ) : null)}
         </div>
-      ))}
+      </div>
     </div>
   );
 }
@@ -412,6 +434,12 @@ export default function Home() {
   const [folderPaths, setFolderPaths] = useState<string[]>([]);
   const [defaultInterval, setDefaultInterval] = useState(90);
   const [query, setQuery] = useState('');
+  const [nativeEngine, setNativeEngine] = useState(false);
+  const [searchPaths, setSearchPaths] = useState<Set<string> | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const versionsRef = useRef(new Map<string, string>());
+
   const [selectedId, setSelectedId] = useState('');
   const [sidebarView, setSidebarView] = useState<'files' | 'outline'>('files');
   const readerRef = useRef<HTMLElement>(null);
@@ -456,6 +484,8 @@ export default function Home() {
     let active = true;
     let inFlight = false;
     let etag = '';
+    let epoch = '';
+    let revision = 0;
     let controller: AbortController | null = null;
 
     async function loadLocalIndex() {
@@ -465,14 +495,16 @@ export default function Home() {
       const timeout = window.setTimeout(() => controller?.abort(), 10_000);
       try {
         const local = isLocalWorkspace();
-        let response = await fetch(local ? '/local-api/index' : '/notes-index.json', { cache: 'no-cache', signal: controller.signal, headers: local && etag ? { 'If-None-Match': etag } : {} });
+        let response = await fetch(local ? `/local-api/index?${new URLSearchParams({ epoch, since: String(revision) })}` : '/notes-index.json', { cache: 'no-cache', signal: controller.signal, headers: local && etag ? { 'If-None-Match': etag } : {} });
         // Keep reading the last published index while the local API restarts.
         if (local && response.status !== 304 && !response.ok) response = await fetch('/notes-index.json', { cache: 'no-cache', signal: controller.signal });
         if (response.status === 304) return;
         if (!response.ok) return;
         if (local) etag = response.headers.get('ETag') || '';
         const payload = (await response.json()) as NotesIndexPayload;
-        if (!active || !payload.generatedAt || payload.generatedAt <= lastSyncRef.current) return;
+        if (!active || !payload.generatedAt) return;
+        if (payload.engine !== 'rust' && payload.generatedAt <= lastSyncRef.current) return;
+        if (payload.engine === 'rust') { setNativeEngine(true); epoch = payload.epoch || ''; revision = payload.revision || 0; }
         if (payload.workspace && loadedWorkspaceRef.current && loadedWorkspaceRef.current !== payload.workspace) {
           if (hasDraftsRef.current) { setEditorError('另一个窗口已切换知识库，请先复制未保存的内容，再刷新页面。'); return; }
           window.location.reload(); return;
@@ -508,9 +540,17 @@ export default function Home() {
           modified: new Date(note.modified),
           source: 'local',
         }));
-        setRawNotes(nextNotes);
+        setRawNotes((previous) => {
+          if (payload.engine !== 'rust') return nextNotes;
+          const removed = new Set(payload.removed || []);
+          const current = new Map(previous.filter((n) => !removed.has(n.path)).map((n) => [n.id, n]));
+          const incoming = new Set(nextNotes.map((n) => n.id));
+          if (payload.full) for (const id of current.keys()) if (!incoming.has(id)) current.delete(id);
+          for (const n of nextNotes) { const old = current.get(n.id); if (old?.version !== n.version || !old) { if (old?.bodyLoaded === true && hasDraftsRef.current) continue; current.set(n.id, n); } }
+          return [...current.values()];
+        });
         setFolderPaths(nextFolders);
-        setSelectedId((current) => nextNotes.some((note) => note.id === current) ? current : nextNotes[0]?.id || '');
+        setSelectedId((current) => payload.engine === 'rust' && payload.full === false ? current : nextNotes.some((note) => note.id === current) ? current : nextNotes[0]?.id || '');
         setExpandedFolders((current) => {
           const available = new Set(nextFolders);
           const preserved = [...current].filter((folder) => available.has(folder));
@@ -544,7 +584,12 @@ export default function Home() {
   }, []);
 
   const notes = useMemo(
-    () => rawNotes.map((note) => parseNote(note, defaultInterval)),
+    () => rawNotes.map((raw) => {
+      const cached = parsedNoteCache.get(raw);
+      if (cached?.interval === defaultInterval) return cached.note;
+      const note = parseNote(raw, defaultInterval);
+      parsedNoteCache.set(raw, { interval: defaultInterval, note }); return note;
+    }),
     [rawNotes, defaultInterval],
   );
 
@@ -556,11 +601,19 @@ export default function Home() {
     [notes],
   );
 
-  const searchableNotes = useMemo(() => notes.map((note) => ({ note, text: `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN') })), [notes]);
+  const searchableNotes = useMemo(() => notes.map((note) => ({ note, text: nativeEngine ? '' : `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN') })), [notes, nativeEngine]);
+  useEffect(() => {
+    if (!nativeEngine || !query.trim()) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch(`/local-api/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal, headers: workspaceHeaders() }).then(async (response) => { if (!response.ok) throw new Error('搜索失败'); return response.json() as Promise<{ paths: string[] }>; }).then((result) => setSearchPaths(new Set(result.paths))).catch((error) => { if (error.name !== 'AbortError') setFileError('搜索暂不可用，请稍后重试。'); });
+    }, 120);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [nativeEngine, query, rawNotes]);
   const filteredNotes = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
-    return searchableNotes.filter(({ note, text }) => (!normalizedQuery || text.includes(normalizedQuery)) && tagFilters.every((tag) => note.tags.includes(tag))).map(({ note }) => note);
-  }, [searchableNotes, query, tagFilters]);
+    return searchableNotes.filter(({ note, text }) => (!normalizedQuery || (nativeEngine ? searchPaths?.has(note.path) : text.includes(normalizedQuery))) && tagFilters.every((tag) => note.tags.includes(tag))).map(({ note }) => note);
+  }, [searchableNotes, query, tagFilters, nativeEngine, searchPaths]);
 
   const folderTree = useMemo(() => {
     const visibleFolders = query.trim() || tagFilters.length
@@ -572,6 +625,22 @@ export default function Home() {
   const selectedNote =
     filteredNotes.find((note) => note.id === selectedId) ||
     filteredNotes[0];
+  const selectedPath = selectedNote?.path;
+  const selectedVersion = selectedNote?.version;
+  const needsBody = selectedNote?.bodyLoaded === false;
+  useEffect(() => {
+    if (!nativeEngine || !selectedPath || !needsBody) return;
+    const controller = new AbortController();
+    void fetch(`/local-api/notes/read?path=${encodeURIComponent(selectedPath)}`, { signal: controller.signal, headers: workspaceHeaders() }).then(async (response) => {
+      const result = await response.json() as { raw: string; modified: string; version: string; error?: string };
+      if (!response.ok) throw new Error(result.error || '打开笔记失败');
+      if (controller.signal.aborted) return;
+      versionsRef.current.set(selectedPath, result.version);
+      setRawNotes((current) => current.map((n) => n.path === selectedPath ? { ...n, summaryRaw: n.raw, raw: result.raw, bodyLoaded: true, modified: new Date(result.modified), version: result.version } : n.bodyLoaded === true && n.summaryRaw !== undefined ? { ...n, raw: n.summaryRaw, bodyLoaded: false } : n));
+      setLoadError('');
+    }).catch((error) => { if (error.name !== 'AbortError') setLoadError(error.message); });
+    return () => controller.abort();
+  }, [nativeEngine, selectedPath, selectedVersion, needsBody, loadAttempt]);
   const editorBody = selectedNote
     ? (editorDrafts[selectedNote.id] ?? selectedNote.body)
     : '';
@@ -676,15 +745,16 @@ export default function Home() {
       const response = await fetch('/local-api/notes/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...workspaceHeaders() },
-        body: JSON.stringify({ path: note.path, tags }),
+        body: JSON.stringify({ path: note.path, tags, version: versionsRef.current.get(note.path) || note.version }),
       });
-      const result = (await response.json()) as { error?: string; raw?: string; modified?: string; tags?: string[] };
+      const result = (await response.json()) as { error?: string; raw?: string; modified?: string; version?: string; summary?: RawNote; tags?: string[] };
       if (!response.ok || !result.raw || !result.modified) {
         throw new Error(result.error || '本地标签服务没有响应，请重新启动知识库网站。');
       }
 
+      if (result.version) versionsRef.current.set(note.path, result.version);
       setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
-        ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+        ? { ...rawNote, raw: result.raw!, version: result.version || rawNote.version, summaryRaw: result.summary?.raw || rawNote.summaryRaw, bodyLoaded: true, modified: new Date(result.modified!) }
         : rawNote));
     } finally { setFileBusy(false); }
   }
@@ -707,18 +777,19 @@ export default function Home() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...workspaceHeaders() },
       body: JSON.stringify(localWorkspace
-        ? { path: note.path, body }
+        ? { path: note.path, body, version: versionsRef.current.get(note.path) || note.version }
         : { path: note.path, raw: replaceNoteBody(note.raw, body) }),
     });
-    const result = (await response.json()) as { error?: string; raw?: string; modified?: string };
+    const result = (await response.json()) as { error?: string; raw?: string; modified?: string; version?: string; summary?: RawNote };
     if (!response.ok || !result.raw || !result.modified) {
       throw new Error(result.error || (localWorkspace
         ? '本地编辑服务没有响应，请重新启动知识库网站。'
         : '云端保存服务没有响应，请稍后重试。'));
     }
 
+    if (result.version) versionsRef.current.set(note.path, result.version);
     setRawNotes((current) => current.map((rawNote) => rawNote.id === note.id
-      ? { ...rawNote, raw: result.raw!, modified: new Date(result.modified!) }
+      ? { ...rawNote, raw: result.raw!, version: result.version || rawNote.version, summaryRaw: result.summary?.raw || rawNote.summaryRaw, bodyLoaded: true, modified: new Date(result.modified!) }
       : rawNote));
     setEditorDrafts((current) => {
       if (current[note.id] !== body) return current;
@@ -922,7 +993,7 @@ export default function Home() {
                   aria-label={`编辑 ${selectedNote.title}`}
 
                 >
-                  <MarkdownRichEditor
+                  {needsBody ? <div className="rich-editor-loading" role="status">{loadError || '正在打开笔记…'}{loadError && <button type="button" onClick={() => { setLoadError(''); setLoadAttempt((n) => n + 1); }}>重试</button>}</div> : <MarkdownRichEditor
                     key={selectedNote.id}
                     markdown={editorBody}
                     notePath={selectedNote.path}
@@ -932,7 +1003,7 @@ export default function Home() {
                       setEditorError('');
                       queueNoteSave(selectedNote, nextMarkdown, 600);
                     }}
-                  />
+                  />}
                   {editorError && <p className="editor-error">{editorError}</p>}
                 </section>
 

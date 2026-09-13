@@ -20,7 +20,8 @@ export function supervise(services, { cwd, env = process.env, maxRestarts = 5, b
         const timer = setTimeout(() => { stopProcessTree(child.pid); }, 10_000);
         child.once('exit', () => { clearTimeout(timer); resolve(); });
         // Our notes worker drains requests on IPC on both Windows and macOS.
-        if (state.ipc && child.connected) child.send('shutdown', () => {});
+        if (state.stdinShutdown && child.stdin) child.stdin.end('shutdown\n');
+        else if (state.ipc && child.connected) child.send('shutdown', () => {});
         else child.kill('SIGTERM');
       });
     });
@@ -32,8 +33,9 @@ export function supervise(services, { cwd, env = process.env, maxRestarts = 5, b
   function launch(state) {
     if (stopping) return;
     state.started = Date.now(); state.failures = 0; state.healthySince = state.healthUrl ? 0 : state.started;
-    const child = spawn(process.execPath, state.args, { cwd, env, stdio: state.ipc ? ['ignore', 'inherit', 'inherit', 'ipc'] : ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32', windowsHide: true });
+    const child = spawn(state.command || process.execPath, state.args, { cwd, env, stdio: state.ipc ? ['ignore', 'inherit', 'inherit', 'ipc'] : [state.stdinShutdown ? 'pipe' : 'ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32', windowsHide: true });
     state.child = child;
+    child.stdin?.on('error', () => {}); // A concurrent child exit may close the control pipe.
     emit('started', state, { pid: child.pid });
     let ended = false;
     const onEnd = (code, signal) => {

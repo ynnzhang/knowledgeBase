@@ -15,16 +15,33 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
       - run: npm run lint
+      - run: cargo fmt --check --manifest-path native/Cargo.toml
       - run: npm run build
-      - run: npm run test:smoke
+      - run: npm run test:rust
+      - run: cargo clippy --locked --all-targets --manifest-path native/Cargo.toml -- -D warnings
+      - run: npm run test:native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zhixu-rust-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            native/target/release/zhixu
+            native/target/release/zhixu.exe
+            native/target/source.sha256
+          if-no-files-found: error

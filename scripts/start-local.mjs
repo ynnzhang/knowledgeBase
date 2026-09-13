@@ -76,6 +76,7 @@ async function start() {
     }
   } });
   if (stopping || process.argv.includes('--prepare')) return;
+  if (!process.argv.includes('--legacy')) { await import('./start-native.mjs'); return; }
   const existingApi = await health(apiUrl);
   if (existingApi && !matchesProject(existingApi)) {
     throw new Error(`端口 ${localApiPort} 正被其他服务或知识库使用，请修改 .env.local 中的 KNOWLEDGE_BASE_API_PORT。`);

@@ -12,14 +12,17 @@ export const requiredProjectFiles = [
     'feishu-content', 'feishu-markdown', 'feishu-media',
   ].map((name) => `scripts/${name}.mjs`),
   ...[
-    'page.tsx', 'layout.tsx', 'globals.css', 'MarkdownRichEditor.tsx',
+    'tree-window.mjs', 'page.tsx', 'layout.tsx', 'globals.css', 'MarkdownRichEditor.tsx',
     'MarkdownRichEditorInner.tsx', 'EditorContextMenu.tsx', 'FeishuSyncPanel.tsx',
     'FileActions.tsx', 'FileRename.tsx', 'LocalFolderPicker.tsx', 'NoteOutline.tsx',
     'ReaderWidthControl.tsx', 'TagManager.tsx', 'local-workspace.ts',
     'note-outline.ts', 'note-images.ts', 'code-fence.mjs', 'heading-shortcuts.mjs', 'api/health/route.ts', 'remark-clean-feishu.ts', 'markdown-syntax.mjs', 'TableTools.tsx', 'NoteCodeBlock.tsx',
     'api/note-overrides/route.ts', 'api/note-images/route.ts',
   ].map((name) => `app/${name}`),
-  'db/schema.ts',
+  'db/schema.ts', 'index.html', 'vite.native.config.ts', 'app/native-main.tsx',
+  'native/Cargo.toml', 'native/Cargo.lock',
+  ...['main', 'lib', 'vault', 'server', 'compat'].map((name) => `native/src/${name}.rs`),
+  ...['native-runtime', 'start-native', 'build-native', 'dev-native', 'native-compat-worker'].map((name) => `scripts/${name}.mjs`),
 ];
 
 export function assertProjectFiles(projectRoot) {

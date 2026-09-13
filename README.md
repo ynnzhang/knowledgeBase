@@ -1,19 +1,19 @@
 # 知序 · 本地知识库
 
-支持 macOS 和 Windows；两端共用启动、笔记编辑、图片、目录管理和飞书同步逻辑。
+支持 macOS 和 Windows，不需要登录，直接整理本地 Markdown。当前默认使用 **Rust（Axum / Tokio）+ SQLite 索引 + React / TypeScript**；前端构建后由 Rust 直接提供服务。飞书同步、标签和复杂文件操作暂保留 Node.js 兼容模块，按需启动。
 
 ## Windows 启动
 
-1. 安装 Node.js 22.13 或更高版本，安装时保留加入 PATH 的选项。
-2. 双击项目中的 `启动知识库网站.cmd`。首次启动会自动安装依赖；网站和编辑服务就绪后自动打开浏览器。
+1. 安装 Node.js 22.13 或更高版本，以及 [Rust stable](https://rust-lang.org/tools/install/)。Windows 按 Rust 安装器提示安装 Visual Studio C++ Build Tools（桌面 C++ 工作负载及 Windows SDK），完成后重新打开 CMD。
+2. 双击项目中的 `启动知识库网站.cmd`。首次启动会自动安装 npm 依赖并编译 Rust；服务就绪后自动打开浏览器。首次编译较慢，以后仅在源码更新后重建。
 3. 已有 `E:\Note` 时继续使用该目录；否则使用用户主目录下的 `Note`（例如 `C:\Users\你的用户名\Note`），首次启动会自动创建。也可以点击网页中的文件夹图标选择已有笔记目录。
 
 启动后保留窗口，按 **Ctrl+C** 停止本次启动的服务；Windows 如询问是否终止批处理，输入 `Y`。搜索使用 **Ctrl+K**，编辑保存使用 **Ctrl+S**。
 
 ## macOS 启动
 
-1. 安装 Node.js 22.13 或更高版本（Apple Silicon 和 Intel Mac 均可）。
-2. 双击项目中的 `启动知识库网站.command`。首次启动会自动安装依赖；服务就绪后自动打开浏览器。
+1. 安装 Node.js 22.13 或更高版本和 [Rust stable](https://rust-lang.org/tools/install/)（Apple Silicon 和 Intel Mac 均可）；需要 Xcode Command Line Tools，可通过 `xcode-select --install` 安装。
+2. 双击项目中的 `启动知识库网站.command`。首次启动会自动安装 npm 依赖并编译 Rust；以后未更新源码时直接启动编译产物，服务就绪后自动打开浏览器。
 3. 将 Markdown 笔记放在用户主目录下的 `Note` 文件夹（`~/Note`）。首次启动会创建该文件夹，文件修改后自动同步。
 
 启动后保留终端窗口；按 **Control+C** 或关闭窗口停止本次启动的服务。Mac 中搜索使用 **⌘K**，在编辑区保存使用 **⌘S**。
@@ -37,9 +37,19 @@ npm run build
 npm start
 ```
 
-正式运行使用官方 Next.js 编译产物，同时启动本地笔记服务。站点或笔记进程崩溃时独立退避重启，无响应时进行健康检查；重启预算耗尽后明确退出。Windows / macOS 通用，浏览器访问 http://localhost:3000/，按 Ctrl+C 停止。开发和双击入口继续使用 `npm run local`。
+正式运行只启动一个 Rust 网站/笔记服务进程，浏览器访问 http://localhost:3000/。编译后的前端嵌入可执行文件，无须 Next.js 渲染进程。启动器提供健康检查和有上限的退避重启，按 Ctrl+C 停止。双击入口和 `npm run local` 使用相同正式模式；`npm run dev` 使用 Vite 热更新前端与 Rust 调试版本，Rust 源码修改后需重启开发命令。
 
 生产模式支持本地保存、目录操作与飞书同步。产品定位是不需要登录的本地笔记工具。运行方式、质量验证和性能边界见 [本地运行说明](docs/production.md)。
+
+## 备份与回退
+
+迁移前源码已保存为 Git 标签 `backup/pre-rust-20260913-165818`，可在独立目录打开旧版本：
+
+```sh
+git worktree add ../knowledgeBase-before-rust backup/pre-rust-20260913-165818
+```
+
+本机完整备份位于项目旁的 `knowledgeBase-backups/20260913-165818/`，包含 Git bundle、源码、笔记和本地配置；配置及笔记没有推送到 Git。旧版本的运行说明见 [旧架构说明](docs/production-legacy.md)。当前检出也保留 `npm run dev:legacy`、`npm run build:legacy`、`npm run start:legacy`；同一个知识库只运行一个版本。
 
 ## 指定笔记目录
 
@@ -50,7 +60,7 @@ KNOWLEDGE_BASE_PATH="~/Documents/我的笔记"
 KNOWLEDGE_BASE_API_PORT=4312
 ```
 
-支持中文、空格、`~/` 和相对于项目目录的路径。自定义目录需要提前创建。配置修改后重启服务；终端环境变量优先于 `.env.local`，其次是 `.env`。
+支持中文、空格、`~/` 和相对于项目目录的路径。自定义目录需要提前创建。配置修改后重启服务；终端环境变量优先于 `.env.local`，其次是 `.env`。`KNOWLEDGE_BASE_API_PORT` 仅用于开发和旧版双进程模式，Rust 正式模式不需要单独 API 端口。
 
 Windows 示例（建议使用正斜杠，也支持盘符反斜杠路径、`~\` 和 UNC 共享目录）：
 
@@ -61,13 +71,13 @@ KNOWLEDGE_BASE_API_PORT=4312
 
 在 Windows 和 Mac 之间迁移时，复制整个笔记目录（含图片、`.assets` 和 `.zhixu-feishu` 子目录），再通过网页重新选择笔记目录。笔记中的相对图片路径支持正斜杠和反斜杠。网页编辑会直接保存到本地 Markdown 文件。
 
-不要跨系统复制 `node_modules`、`dist`、`.next`、`.vinext`、`.wrangler` 等依赖或生成目录；在目标电脑运行 `npm ci` 安装对应平台的依赖。`.knowledge-base.local.json` 记录的是单台电脑的绝对路径，也不要随项目迁移；若已复制，可删除这个配置文件后重新选择目录（不会删除笔记）。
+不要跨系统复制 `node_modules`、`native/target`、`dist`、`.next`、`.vinext`、`.wrangler` 等依赖或生成目录；在目标电脑运行 `npm ci` 安装对应平台的依赖。`.knowledge-base.local.json` 记录的是单台电脑的绝对路径，也不要随项目迁移；若已复制，可删除这个配置文件后重新选择目录（不会删除笔记）。
 
 ## 常见问题
 
 - 更新后报 `Failed to resolve import "micromark-extension-cjk-friendly"` 或其他新增 npm 包缺失：先按 **Ctrl+C** 停止服务，在项目目录执行 `npm ci`，完成后运行 `npm run local`。这是本机依赖未更新，笔记目录无需调整。新版启动器及 `npm run dev` / `npm run dev:site` 会核对已安装的直接依赖与锁定版本，缺失或版本不符时自动执行 `npm ci`；依赖完整时跳过安装。若检测到当前项目仍在运行，会提示先停止旧服务，避免 Windows 文件占用。
 - 找不到 Node.js：Windows 检查 Node.js 和 npm 是否已加入 PATH，安装后重新打开窗口；Mac 启动入口还会检查 Homebrew 的常见安装位置及默认 nvm 安装。其他版本管理器可在其已配置的终端运行 `npm run local`。
-- 端口占用：网站使用 3000，编辑服务默认使用 4312。关闭已有服务，或修改编辑服务端口后重启。两个系统重复双击启动文件都会复用同一项目、同一目录的已运行服务。
+- 端口占用：正式模式只使用 3000；开发模式的 Rust API 默认使用 4312，可通过 `KNOWLEDGE_BASE_API_PORT` 调整。启动新版前请关闭旧服务。两个系统重复双击启动文件都会复用同一项目、同一目录的已运行服务。
 - 无法读取笔记：检查 `.env.local` 路径和目录权限；macOS 询问终端访问文稿或桌面文件夹时，允许访问所选笔记目录。
 - 启动提示 `Cannot find module .../scripts/local-config.mjs` 或「项目文件不完整」：说明项目源码没有复制齐，不是 Node.js 版本问题。完整解压同一版本的项目包，或从原电脑同步完整的 `scripts/`、`app/`、配置和依赖清单；不要只补一个文件。`npm install` / `npm ci` 不能补回项目源码。新版启动器及 `npm run dev` 会在启动服务前列出缺失文件，也可单独运行 `npm run check:project`。
 - 将项目通过 Git 传到另一台电脑时，原电脑的新增源码必须先纳入提交；仅复制 Git 已跟踪文件或仅执行 `git pull` 不会带上未提交的新文件。通过项目包迁移时建议解压到新的项目目录，在 Windows 上重新安装依赖。保留 Windows 原有的笔记目录；按需迁移本机 `.env.local`、`.feishu-local.json` 和 `.knowledge-base.local.json`，不要用 Mac 的绝对路径配置覆盖它们。

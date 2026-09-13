@@ -13,7 +13,7 @@ export type FileResult = {
     generatedAt: string;
     workspace: string;
     folders: string[];
-    notes: Array<{ id: string; name: string; path: string; raw: string; modified: string; source: 'local' }>;
+    notes: Array<{ id: string; name: string; path: string; raw: string; modified: string; source: 'local'; version?: string; bodyLoaded?: boolean }>;
   };
 };
 type Props = {

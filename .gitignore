@@ -46,3 +46,7 @@ next-env.d.ts
 
 /.knowledge-base.local.json
 /.knowledge-base.local.json.*.tmp
+
+/native/target/
+/desktop/target/
+/.zhixu-native/
