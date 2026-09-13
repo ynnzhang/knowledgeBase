@@ -1,5 +1,6 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import type { Nodes } from 'mdast';
+import { cjkSyntax } from './markdown-syntax.mjs';
 
 export type NoteHeading = { title: string; level: number; offset: number; end: number };
 
@@ -26,6 +27,6 @@ export function extractNoteHeadings(markdown: string): NoteHeading[] {
       node.children.forEach(visit);
     }
   }
-  visit(fromMarkdown(markdown));
+  visit(fromMarkdown(markdown, { extensions: [cjkSyntax] }));
   return headings;
 }

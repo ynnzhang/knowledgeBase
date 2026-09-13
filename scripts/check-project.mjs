@@ -16,7 +16,7 @@ export const requiredProjectFiles = [
     'MarkdownRichEditorInner.tsx', 'EditorContextMenu.tsx', 'FeishuSyncPanel.tsx',
     'FileActions.tsx', 'FileRename.tsx', 'LocalFolderPicker.tsx', 'NoteOutline.tsx',
     'ReaderWidthControl.tsx', 'TagManager.tsx', 'local-workspace.ts',
-    'note-outline.ts', 'note-images.ts', 'remark-clean-feishu.ts',
+    'note-outline.ts', 'note-images.ts', 'remark-clean-feishu.ts', 'markdown-syntax.mjs', 'TableTools.tsx',
     'api/note-overrides/route.ts', 'api/note-images/route.ts',
   ].map((name) => `app/${name}`),
   'db/schema.ts',

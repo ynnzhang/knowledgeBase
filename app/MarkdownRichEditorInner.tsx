@@ -12,6 +12,8 @@ import {
   MDXEditor,
   type MDXEditorMethods,
   addImportVisitor$,
+  addSyntaxExtension$,
+  addToMarkdownExtension$,
   codeBlockPlugin,
   codeMirrorPlugin,
   headingsPlugin,
@@ -31,6 +33,12 @@ import {
 import { resolveNoteImageUrl, uploadNoteImage } from './note-images';
 import { editorContextMenuPlugin } from './EditorContextMenu';
 import { cleanFeishuMarkdown } from './remark-clean-feishu';
+import { cjkSyntax, cjkSerialization } from './markdown-syntax.mjs';
+import { tableToolsPlugin } from './TableTools';
+
+const cjkMarkdownPlugin = realmPlugin({
+  init(realm) { realm.pubIn({ [addSyntaxExtension$]: cjkSyntax, [addToMarkdownExtension$]: cjkSerialization }); },
+});
 
 export type MarkdownRichEditorProps = {
   markdown: string;
@@ -245,6 +253,8 @@ export default function MarkdownRichEditorInner({ markdown, notePath, readOnly =
       imagePreviewHandler: async (imageSource) => resolveNoteImageUrl(notePath, imageSource),
     }),
     tablePlugin(),
+    tableToolsPlugin(),
+    cjkMarkdownPlugin(),
     thematicBreakPlugin(),
     codeBlockPlugin({ defaultCodeBlockLanguage: 'txt' }),
     codeMirrorPlugin({

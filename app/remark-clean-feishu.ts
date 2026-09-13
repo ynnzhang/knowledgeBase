@@ -1,5 +1,6 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import type { Root, RootContent, Blockquote, PhrasingContent } from 'mdast';
+import { cjkSyntax } from './markdown-syntax.mjs';
 
 // Older imports included these generated labels. Hide only the standalone
 // label, retaining the source content and any errors or ordinary quotations.
@@ -49,7 +50,7 @@ export function cleanFeishuMarkdown(markdown: string) {
       else if ('children' in node) visit(node.children as RootContent[]);
     }
   }
-  visit(fromMarkdown(markdown).children);
+  visit(fromMarkdown(markdown, { extensions: [cjkSyntax] }).children);
   for (const { start, end } of removals.reverse()) markdown = markdown.slice(0, start) + markdown.slice(end);
   return markdown;
 }
