@@ -14,7 +14,7 @@
     "predev:site": "node scripts/start-local.mjs --prepare",
     "notes:sync": "node scripts/sync-notes.mjs",
     "notes:watch": "node scripts/sync-notes.mjs --watch",
-    "test:local": "node --test scripts/local-notes.test.mjs scripts/local-files.test.mjs scripts/local-workspace.test.mjs scripts/local-platform.test.mjs scripts/check-project.test.mjs scripts/check-dependencies.test.mjs",
+    "test:local": "node --test scripts/local-notes.test.mjs scripts/local-files.test.mjs scripts/local-workspace.test.mjs scripts/local-platform.test.mjs scripts/check-project.test.mjs scripts/check-dependencies.test.mjs scripts/note-index.test.mjs",
     "test:feishu": "node --test scripts/feishu-sync.test.mjs",
     "test:outline": "node --experimental-strip-types --test scripts/note-outline.test.mjs",
     "prebuild": "npm run notes:sync",
@@ -23,9 +23,12 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/view": "^6.43.9",
     "@lexical/react": "^0.48.0",
     "@lexical/rich-text": "^0.48.0",
     "@lexical/selection": "^0.48.0",
+    "@lezer/highlight": "^1.2.3",
     "@mdxeditor/editor": "^4.2.3",
     "@mdxeditor/gurx": "^1.2.4",
     "lexical": "^0.48.0",

@@ -35,6 +35,7 @@ import { editorContextMenuPlugin } from './EditorContextMenu';
 import { cleanFeishuMarkdown } from './remark-clean-feishu';
 import { cjkSyntax, cjkSerialization } from './markdown-syntax.mjs';
 import { tableToolsPlugin } from './TableTools';
+import { NoteCodeBlock, noteCodeExtensions } from './NoteCodeBlock';
 
 const cjkMarkdownPlugin = realmPlugin({
   init(realm) { realm.pubIn({ [addSyntaxExtension$]: cjkSyntax, [addToMarkdownExtension$]: cjkSerialization }); },
@@ -256,8 +257,9 @@ export default function MarkdownRichEditorInner({ markdown, notePath, readOnly =
     tableToolsPlugin(),
     cjkMarkdownPlugin(),
     thematicBreakPlugin(),
-    codeBlockPlugin({ defaultCodeBlockLanguage: 'txt' }),
+    codeBlockPlugin({ defaultCodeBlockLanguage: 'txt', codeBlockEditorDescriptors: [{ priority: 10, match: () => true, Editor: NoteCodeBlock }] }),
     codeMirrorPlugin({
+      codeMirrorExtensions: noteCodeExtensions,
       codeBlockLanguages: {
         txt: '纯文本',
         js: 'JavaScript',

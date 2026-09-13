@@ -1,13 +1,14 @@
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { projectRoot, notesRoot as initialNotesRoot, localApiPort, usesDefaultNotesRoot } from './local-config.mjs';
 import { createFeishuSync, allowFeishuRequest } from './feishu-sync.mjs';
 import { normalizeTags, updateNoteTags } from './note-tags.mjs';
 import { createLocalFiles } from './local-files.mjs';
+import { atomicWrite, createNoteScanner } from './note-index.mjs';
 import { chooseLocalFolder, validateLocalFolder, saveLocalFolder } from './local-workspace.mjs';
 
 const outputFile = path.join(projectRoot, 'public', 'notes-index.json');
@@ -33,49 +34,15 @@ const imageMimeByExtension = new Map([...imageTypes].map(([mime, extension]) => 
 imageMimeByExtension.set('.jpeg', 'image/jpeg');
 imageMimeByExtension.set('.svg', 'image/svg+xml');
 
-function toWebPath(value) {
-  return value.split(path.sep).join('/');
-}
-
-async function collectDirectory(directory, folders, notes, root = notesRoot) {
-  const entries = await readdir(directory, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (entry.isDirectory() && (ignoredFolders.has(entry.name) || entry.name.endsWith('.assets'))) continue;
-    const absolutePath = path.join(directory, entry.name);
-
-    if (entry.isDirectory()) {
-      folders.push(toWebPath(path.relative(root, absolutePath)));
-      await collectDirectory(absolutePath, folders, notes, root);
-      continue;
-    }
-
-    if (!entry.isFile() || !/\.md(?:own)?$/i.test(entry.name)) continue;
-
-    try {
-      const [raw, fileInfo] = await Promise.all([
-        readFile(absolutePath, 'utf8'),
-        stat(absolutePath),
-      ]);
-      const relativePath = toWebPath(path.relative(root, absolutePath));
-      notes.push({
-        id: `local-${relativePath}`,
-        name: entry.name,
-        path: relativePath,
-        raw,
-        modified: fileInfo.mtime.toISOString(),
-        source: 'local',
-      });
-    } catch (error) {
-      console.warn(`[notes] 跳过无法读取的文件：${absolutePath}`, error.message);
-    }
-  }
-}
+const scanNotes = createNoteScanner();
+let indexBody = '';
+let indexEtag = '';
+let indexPayload = null;
 
 async function copyAssetDirectories(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isDirectory() || ignoredFolders.has(entry.name)) continue;
+    if (!entry.isDirectory() || ignoredFolders.has(entry.name) || entry.name.startsWith('.')) continue;
     const absolutePath = path.join(directory, entry.name);
     if (entry.name.endsWith('.assets')) {
       const relativePath = path.relative(notesRoot, absolutePath);
@@ -87,43 +54,51 @@ async function copyAssetDirectories(directory) {
 }
 
 let syncQueue = Promise.resolve();
+let queuedSync = null;
 function syncNotes() {
-  const task = syncQueue.then(writeNotesIndex);
-  syncQueue = task.catch(() => {});
-  return task;
+  if (!queuedSync) {
+    queuedSync = syncQueue.then(() => { queuedSync = null; return writeNotesIndex(); });
+    syncQueue = queuedSync.catch(() => {});
+  }
+  return queuedSync;
 }
 
 async function writeNotesIndex() {
-  let notes = [];
-  let folders = [];
+  let collected;
   let error = null;
-
   try {
     if (notesRoot === initialNotesRoot && usesDefaultNotesRoot) await mkdir(notesRoot, { recursive: true });
-    await collectDirectory(notesRoot, folders, notes);
-    const generatedAssetsPath = path.relative(projectRoot, outputAssetsRoot);
-    if (generatedAssetsPath !== path.join('public', 'note-assets')) {
-      throw new Error('生成的图片目录无效。');
+    collected = await scanNotes(notesRoot);
+    // The local editor serves images directly from the vault. Copy only when
+    // building the standalone site, never on every keystroke or file event.
+    if (!watchMode) {
+      await rm(outputAssetsRoot, { recursive: true, force: true });
+      await mkdir(outputAssetsRoot, { recursive: true });
+      await copyAssetDirectories(notesRoot);
     }
-    await rm(outputAssetsRoot, { recursive: true, force: true });
-    await mkdir(outputAssetsRoot, { recursive: true });
-    await copyAssetDirectories(notesRoot);
   } catch (syncError) {
-    console.error(`无法读取知识库目录：${syncError.message}`);
-    error = `无法读取知识库目录：${notesRoot}。请确认目录存在且可访问，或在 .env.local 中设置 KNOWLEDGE_BASE_PATH。`;
+    console.error(`[notes] 索引更新失败，保留上次可用内容：${syncError.message}`);
+    error = `暂时无法读取知识库目录：${notesRoot}。已保留上次内容，将自动重试。`;
+    if (!indexPayload) {
+      try {
+        const saved = JSON.parse(await readFile(outputFile, 'utf8'));
+        if (saved.workspace === notesRoot && Array.isArray(saved.notes) && Array.isArray(saved.folders)) indexPayload = saved;
+      } catch { /* No previous complete index exists. */ }
+    }
+    collected = indexPayload?.workspace === notesRoot ? { notes: indexPayload.notes, folders: indexPayload.folders } : { notes: [], folders: [] };
   }
-
-  const payload = {
-    generatedAt: new Date().toISOString(),
-    workspace: notesRoot,
-    error,
-    folders,
-    notes,
-  };
-
-  await writeFile(outputFile, JSON.stringify(payload), 'utf8');
+  if (indexBody && indexPayload?.workspace === notesRoot && indexPayload.error === error
+    && indexPayload.notes.length === collected.notes.length && indexPayload.folders.length === collected.folders.length
+    && collected.notes.every((note, index) => note === indexPayload.notes[index])
+    && collected.folders.every((folder, index) => folder === indexPayload.folders[index])) return !error;
+  const generatedAt = new Date(Math.max(Date.now(), Date.parse(indexPayload?.generatedAt || '') + 1 || 0)).toISOString();
+  const payload = { generatedAt, workspace: notesRoot, error, ...collected };
+  const body = JSON.stringify(payload);
+  await atomicWrite(outputFile, body);
+  indexPayload = payload; indexBody = body;
+  indexEtag = `"${createHash('sha256').update(body).digest('hex')}"`;
   if (error) console.warn(`[notes] ${error}`);
-  else console.log(`[notes] 已从 ${notesRoot} 同步 ${folders.length} 个文件夹、${notes.length} 篇 Markdown 笔记`);
+  else console.log(`[notes] 已从 ${notesRoot} 同步 ${collected.folders.length} 个文件夹、${collected.notes.length} 篇 Markdown 笔记`);
   return !error;
 }
 
@@ -204,18 +179,33 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+function scheduleSync() {
+  clearTimeout(watchTimer);
+  watchTimer = setTimeout(() => {
+    if (localFiles.busy || workspaceBusy || feishu.busy || localWrites) { scheduleSync(); return; }
+    void syncNotes().catch((error) => console.error(`[notes] 索引写入失败，将自动重试：${error.message}`));
+  }, 350);
+}
+
 function observeFolder(root) {
-  return watch(root, { recursive: true }, () => {
-    clearTimeout(watchTimer);
-    watchTimer = setTimeout(() => { if (!localFiles.busy && !workspaceBusy) void syncNotes(); }, 350);
+  const observed = watch(root, { recursive: true }, (_event, filename) => {
+    const parts = String(filename || '').replaceAll('\\', '/').split('/');
+    if (parts.some((part) => part.startsWith('.') || part === 'node_modules' || part.endsWith('.assets')) || parts.at(-1)?.endsWith('.tmp')) return;
+    scheduleSync();
   });
+  observed.on('error', (error) => {
+    console.warn(`[notes] 文件监视暂时中断，将自动重试：${error.message}`);
+    observed.close();
+    if (watcher === observed) watcher = null;
+  });
+  return observed;
 }
 
 async function switchWorkspace(value) {
   const next = await validateLocalFolder(value);
   if (next === notesRoot) return;
   // Validate before changing the active vault; failures keep the old one usable.
-  await collectDirectory(next, [], [], next);
+  await createNoteScanner()(next);
   const nextWatcher = watchMode ? observeFolder(next) : null;
   try {
     await syncQueue;
@@ -231,13 +221,21 @@ async function switchWorkspace(value) {
 }
 
 function startLocalApi() {
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request, response) => {
     const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
 
     const expectedWorkspace = request.headers['x-zhixu-workspace'] || requestUrl.searchParams.get('workspace');
     if (expectedWorkspace && expectedWorkspace !== encodeURIComponent(notesRoot)) {
       sendJson(response, 409, { error: '知识库目录已切换，请刷新页面后重试。未保存的内容请先复制保留。' });
       return;
+    }
+    if (request.method === 'GET' && requestUrl.pathname === '/index') {
+      if (!allowFeishuRequest(request, localApiPort)) { sendJson(response, 403, { error: '索引只允许从本机知识库访问。' }); return; }
+      response.setHeader('Cache-Control', 'private, no-cache');
+      response.setHeader('ETag', indexEtag);
+      if (request.headers['if-none-match'] === indexEtag) { response.writeHead(304); response.end(); return; }
+      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(indexBody); return;
     }
     if (request.method === 'POST' && requestUrl.pathname.startsWith('/workspace/')) {
       if (!allowFeishuRequest(request, localApiPort)) { sendJson(response, 403, { error: '只允许从本机知识库选择文件夹。' }); return; }
@@ -367,7 +365,7 @@ function startLocalApi() {
       const nextRaw = isTagRequest
         ? updateNoteTags(raw, tags, fileInfo.mtime)
         : updateFrontmatterContent(raw, input.body);
-      await writeFile(absolutePath, nextRaw, 'utf8');
+      await atomicWrite(absolutePath, nextRaw);
       await syncNotes();
       sendJson(response, 200, {
         ok: true,
@@ -378,7 +376,16 @@ function startLocalApi() {
     } catch (error) {
       sendJson(response, 400, { error: error.message || '笔记保存失败。' });
     } finally { localWrites--; }
+  };
+  const server = createServer((request, response) => {
+    void handleRequest(request, response).catch((error) => {
+      console.error(`[notes] 请求处理失败：${error.message}`);
+      if (!response.headersSent) sendJson(response, 500, { error: '本地服务暂时无法完成请求，请稍后重试。' });
+      else response.destroy();
+    });
   });
+  server.headersTimeout = 15_000;
+  server.requestTimeout = 30_000;
 
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') console.warn(`[notes] 编辑服务端口 ${localApiPort} 已被占用`);
@@ -395,8 +402,16 @@ const initialSyncSucceeded = await syncNotes();
 
 if (watchMode) {
   const apiServer = startLocalApi();
-  if (initialSyncSucceeded) watcher = observeFolder(notesRoot);
+  function restoreWatcher() {
+    if (watcher || workspaceBusy) return;
+    try { watcher = observeFolder(notesRoot); }
+    catch (error) { console.warn(`[notes] 等待知识库目录恢复：${error.message}`); }
+  }
+  if (initialSyncSucceeded) restoreWatcher();
+  // Reconcile missed OS file events and recover disconnected/renamed folders.
+  const recoveryTimer = setInterval(() => { restoreWatcher(); scheduleSync(); }, 15_000);
   console.log(`[notes] 正在监视 ${notesRoot}`);
-  process.on('SIGINT', () => { clearTimeout(watchTimer); watcher?.close(); apiServer.close(); });
-  process.on('SIGTERM', () => { clearTimeout(watchTimer); watcher?.close(); apiServer.close(); });
-}
+  const close = () => { clearInterval(recoveryTimer); clearTimeout(watchTimer); watcher?.close(); apiServer.close(); };
+  process.on('SIGINT', close);
+  process.on('SIGTERM', close);
+} else if (!initialSyncSucceeded) process.exitCode = 1;

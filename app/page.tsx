@@ -454,11 +454,23 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    let inFlight = false;
+    let etag = '';
+    let controller: AbortController | null = null;
 
     async function loadLocalIndex() {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
+      controller = new AbortController();
+      const timeout = window.setTimeout(() => controller?.abort(), 10_000);
       try {
-        const response = await fetch(`/notes-index.json?t=${Date.now()}`, { cache: 'no-store' });
+        const local = isLocalWorkspace();
+        let response = await fetch(local ? '/local-api/index' : '/notes-index.json', { cache: 'no-cache', signal: controller.signal, headers: local && etag ? { 'If-None-Match': etag } : {} });
+        // Keep reading the last published index while the local API restarts.
+        if (local && response.status !== 304 && !response.ok) response = await fetch('/notes-index.json', { cache: 'no-cache', signal: controller.signal });
+        if (response.status === 304) return;
         if (!response.ok) return;
+        if (local) etag = response.headers.get('ETag') || '';
         const payload = (await response.json()) as NotesIndexPayload;
         if (!active || !payload.generatedAt || payload.generatedAt <= lastSyncRef.current) return;
         if (payload.workspace && loadedWorkspaceRef.current && loadedWorkspaceRef.current !== payload.workspace) {
@@ -466,11 +478,12 @@ export default function Home() {
           window.location.reload(); return;
         }
         if (payload.workspace) { loadedWorkspaceRef.current = payload.workspace; setWorkspacePath(payload.workspace); setLocalWorkspace(payload.workspace); }
+        const hadIndex = Boolean(lastSyncRef.current);
         lastSyncRef.current = payload.generatedAt;
 
         if (payload.error) {
           setIndexError(payload.error);
-          return;
+          if (hadIndex || !payload.notes?.length) return;
         }
 
         const nextFolders = payload.folders || [];
@@ -503,17 +516,24 @@ export default function Home() {
           const preserved = [...current].filter((folder) => available.has(folder));
           return new Set(preserved.length ? preserved : nextFolders.filter((folder) => !folder.includes('/')));
         });
-        setIndexError('');
+        setIndexError(payload.error || '');
       } catch {
         // 开发服务器首次启动时索引可能尚未生成，下一轮会自动重试。
+      } finally {
+        window.clearTimeout(timeout);
+        inFlight = false;
       }
     }
 
     void loadLocalIndex();
     const timer = window.setInterval(() => void loadLocalIndex(), 4_000);
+    const refresh = () => { if (!document.hidden) void loadLocalIndex(); };
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       active = false;
       window.clearInterval(timer);
+      controller?.abort();
+      document.removeEventListener('visibilitychange', refresh);
     };
   }, []);
 
@@ -536,14 +556,11 @@ export default function Home() {
     [notes],
   );
 
+  const searchableNotes = useMemo(() => notes.map((note) => ({ note, text: `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN') })), [notes]);
   const filteredNotes = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
-    return notes
-      .filter((note) => {
-        const haystack = `${note.title} ${note.path} ${note.tags.join(' ')} ${note.body}`.toLocaleLowerCase('zh-CN');
-        return (!normalizedQuery || haystack.includes(normalizedQuery)) && tagFilters.every((tag) => note.tags.includes(tag));
-      });
-  }, [notes, query, tagFilters]);
+    return searchableNotes.filter(({ note, text }) => (!normalizedQuery || text.includes(normalizedQuery)) && tagFilters.every((tag) => note.tags.includes(tag))).map(({ note }) => note);
+  }, [searchableNotes, query, tagFilters]);
 
   const folderTree = useMemo(() => {
     const visibleFolders = query.trim() || tagFilters.length
@@ -909,7 +926,7 @@ export default function Home() {
                     key={selectedNote.id}
                     markdown={editorBody}
                     notePath={selectedNote.path}
-                    readOnly={feishuBusy || fileBusy}
+                    readOnly={feishuBusy || fileBusy || Boolean(indexError)}
                     onChange={(nextMarkdown) => {
                       setEditorDrafts((current) => ({ ...current, [selectedNote.id]: nextMarkdown }));
                       setEditorError('');

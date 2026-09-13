@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -30,7 +30,7 @@ test('platform defaults and portable custom paths', () => {
   assert.ok(validSavedRoot('\\\\server\\share\\笔记', 'win32'));
 });
 
-test('cross-platform local workflow: env file, sync, watch, save, and Windows image paths', { timeout: 20000 }, async (t) => {
+test('cross-platform local workflow: env file, sync, watch, save, recovery and Windows image paths', { timeout: 50000 }, async (t) => {
   const fixture = await realpath(await mkdtemp(path.join(tmpdir(), 'zhixu-local-')));
   let child;
   t.after(async () => {
@@ -44,7 +44,7 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   await mkdir(path.join(fixture, 'scripts'));
   await mkdir(path.join(fixture, 'public'));
   await symlink(path.join(projectRoot, 'node_modules'), path.join(fixture, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
-  for (const name of ['sync-notes.mjs', 'local-files.mjs', 'local-workspace.mjs', 'note-tags.mjs', 'local-config.mjs', 'feishu-sync.mjs', 'feishu-markdown.mjs', 'feishu-content.mjs', 'feishu-media.mjs']) {
+  for (const name of ['sync-notes.mjs', 'note-index.mjs', 'local-files.mjs', 'local-workspace.mjs', 'note-tags.mjs', 'local-config.mjs', 'feishu-sync.mjs', 'feishu-markdown.mjs', 'feishu-content.mjs', 'feishu-media.mjs']) {
     await cp(path.join(projectRoot, 'scripts', name), path.join(fixture, 'scripts', name));
   }
   const vault = path.join(fixture, '我的 笔记');
@@ -68,8 +68,8 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   child.stdout.on('data', (data) => { logs += data; });
   child.stderr.on('data', (data) => { logs += data; });
   const base = `http://127.0.0.1:${port}`;
-  async function waitFor(check) {
-    for (let i = 0; i < 80; i += 1) {
+  async function waitFor(check, attempts = 80) {
+    for (let i = 0; i < attempts; i += 1) {
       if (child.exitCode !== null) assert.fail(logs);
       try { if (await check()) return; } catch { /* Retry until ready. */ }
       await delay(100);
@@ -82,6 +82,14 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   assert.equal(status.service, 'zhixu-notes');
   const index = () => readFile(path.join(fixture, 'public', 'notes-index.json'), 'utf8').then(JSON.parse);
   assert.equal((await index()).notes[0].path, notePath);
+  const initialIndex = await fetch(`${base}/index`);
+  assert.equal(initialIndex.status, 200);
+  const initialEtag = initialIndex.headers.get('etag');
+  assert.ok(initialEtag);
+  assert.equal((await initialIndex.json()).notes[0].path, notePath);
+  const unchangedIndex = await fetch(`${base}/index`, { headers: { 'If-None-Match': initialEtag } });
+  assert.equal(unchangedIndex.status, 304);
+  assert.equal(await unchangedIndex.text(), '');
   const query = new URLSearchParams({ notePath, src: '.\\测试.assets\\图片.png' });
   const image = await fetch(`${base}/assets?${query}`);
   assert.equal(image.status, 200);
@@ -92,6 +100,11 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   });
   assert.equal(saved.status, 200);
   assert.match(await readFile(path.join(vault, notePath), 'utf8'), /本地保存成功/);
+  const refreshedIndex = await fetch(`${base}/index`, { headers: { 'If-None-Match': initialEtag } });
+  assert.equal(refreshedIndex.status, 200);
+  assert.notEqual(refreshedIndex.headers.get('etag'), initialEtag);
+  assert.match((await refreshedIndex.json()).notes[0].raw, /本地保存成功/);
+  await assert.rejects(readFile(path.join(fixture, 'public/note-assets/分类/测试.assets/图片.png')), { code: 'ENOENT' });
   const upload = await fetch(`${base}/notes/images?${new URLSearchParams({ notePath })}`, {
     method: 'POST', headers: { 'Content-Type': 'image/png' }, body: png,
   });
@@ -175,6 +188,23 @@ test('cross-platform local workflow: env file, sync, watch, save, and Windows im
   assert.equal((await (await fetch(`${base}/health`)).json()).notesRoot, secondVault);
   const persisted = JSON.parse(await readFile(path.join(fixture, '.knowledge-base.local.json'), 'utf8'));
   assert.equal(persisted.notesRoot, secondVault);
+  const previousNotes = (await index()).notes;
+  await rename(secondVault, `${secondVault}.offline`);
+  await waitFor(async () => Boolean((await index()).error), 200);
+  assert.deepEqual((await index()).notes, previousNotes);
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+  const outageExit = once(child, 'exit');
+  child.kill('SIGTERM'); await outageExit;
+  child = spawn(process.execPath, [path.join(fixture, 'scripts', 'sync-notes.mjs'), '--watch'], { env, cwd: tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', (data) => { logs += data; });
+  child.stderr.on('data', (data) => { logs += data; });
+  await waitFor(async () => (await fetch(`${base}/health`)).ok);
+  const offlineSnapshot = await (await fetch(`${base}/index`)).json();
+  assert.ok(offlineSnapshot.error);
+  assert.deepEqual(offlineSnapshot.notes, previousNotes);
+  await rename(`${secondVault}.offline`, secondVault);
+  await waitFor(async () => !(await index()).error, 200);
+  assert.deepEqual((await index()).notes, previousNotes);
   const exited = once(child, 'exit');
   child.kill('SIGTERM');
   await exited;
