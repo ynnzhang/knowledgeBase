@@ -140,6 +140,7 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
   const privateRoot = path.join(notesRoot, '.zhixu-feishu');
   let busy = false;
   let job = null;
+  const pullConfirmations = new Map();
 
   async function safePath(relative, createParents = false) {
     if (typeof relative !== 'string' || !relative || path.isAbsolute(relative) || relative.includes('\\') || relative.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error('同步文件路径无效。');
@@ -235,7 +236,7 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
     return readFile(file);
   }
   const imageMarkdown = (notePath, body) => prepareImageMarkdown(body, (source) => readImage(notePath, source));
-  async function execute(action, notePath, copy = false, nodeTokens = [], folders = [], overwriteSyncedBlocks = false) {
+  async function execute(action, notePath, copy = false, nodeTokens = [], folders = [], overwriteSyncedBlocks = false, pullConfirmation) {
     const value = await config();
     if (!value.appSecret) throw new Error('请先配置 App Secret，并测试飞书连接。');
     const wiki = parseWikiUrl(value.wikiUrl);
@@ -384,17 +385,24 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
         raw = await readNote(filePath);
         if (remote.incomplete) throw new Error('同步块读取不完整，已保留本地正文；请检查源文档授权后重新拉取。');
         let assetsChanged = false;
+        let currentAssetHash = null;
         if (entry.assetHash) {
-          try { assetsChanged = (await imageMarkdown(filePath, splitFrontmatter(raw).body)).assetHash !== entry.assetHash; }
-          catch (error) { if (error.code !== 'ENOENT') throw error; }
+          try { currentAssetHash = (await imageMarkdown(filePath, splitFrontmatter(raw).body)).assetHash; assetsChanged = currentAssetHash !== entry.assetHash; }
+          catch (error) { if (error.code !== 'ENOENT') throw error; assetsChanged = true; }
         }
+        const fingerprint = createHash('sha256').update(JSON.stringify({ scope: current.scope, path: filePath, documentId: node.obj_token, raw, assetHash: currentAssetHash, remote })).digest('hex');
+        const confirmed = pullConfirmation?.fingerprint === fingerprint;
         const remoteUnchanged = remote.revision === entry.revision && (!entry.remoteHash || digest(remote.markdown) === entry.remoteHash);
-        if (digest(raw) !== entry.localHash || assetsChanged) {
-          if (remoteUnchanged) { results.push({ status: 'skipped', path: filePath, message: '本地有修改，飞书未变化；可使用推送当前笔记。' }); return; }
+        if (!confirmed && (pullConfirmation || digest(raw) !== entry.localHash || assetsChanged)) {
+          if (!pullConfirmation && remoteUnchanged) { results.push({ status: 'skipped', path: filePath, message: '本地有修改，飞书未变化；可使用推送当前笔记。' }); return; }
           const conflict = await backup({ kind: 'conflict', path: filePath, local: raw, remote });
-          results.push({ status: 'conflict', path: filePath, message: `两端均有修改，未覆盖。两份内容已备份：${conflict}` }); return;
+          const confirmationToken = randomUUID();
+          for (const [token, previous] of pullConfirmations) if (previous.path === filePath) pullConfirmations.delete(token);
+          if (pullConfirmations.size >= 10000) pullConfirmations.delete(pullConfirmations.keys().next().value);
+          pullConfirmations.set(confirmationToken, { path: filePath, fingerprint });
+          results.push({ status: 'conflict', path: filePath, confirmationToken, message: `${pullConfirmation ? '确认期间内容发生变化，请重新选择是否覆盖。' : '两端均有修改，请选择保留本地或用飞书内容覆盖本地。'}两份内容已备份：${conflict}` }); return;
         }
-        if (remoteUnchanged && entry.renderVersion === 2) {
+        if (!confirmed && remoteUnchanged && entry.renderVersion === 2) {
           await localizeImages(remote, filePath, node.obj_token);
           results.push({ status: 'unchanged', path: filePath, message: '没有新变化。' }); return;
         }
@@ -415,7 +423,7 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
       }
       Object.assign(entry, { revision: remote.revision, localHash: digest(nextRaw), remoteHash: digest(remote.markdown), assetHash, renderVersion: 2, ...(wikiPath ? { wikiPath } : {}), warnings: remote.warnings, syncedAt: new Date().toISOString(), url: `${wiki.origin}/wiki/${node.node_token}` });
       await saveState(current);
-      results.push({ status: remote.warnings.length ? 'warning' : 'ok', path: filePath, message: ['已导入飞书内容。', ...remote.warnings].join(' ') });
+      results.push({ status: remote.warnings.length ? 'warning' : 'ok', path: filePath, message: [pullConfirmation ? '已用飞书内容覆盖本地，覆盖前内容已备份。' : '已导入飞书内容。', ...remote.warnings].join(' ') });
     }
     function isUnimported(item, items) {
       return item.node.obj_type === 'docx' && item.node.node_type !== 'shortcut' && !current.entries.some((entry) =>
@@ -796,9 +804,11 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
     // Push parent documents before their descendants, so their existing nodes can serve as folders.
     return { notes: [...notes].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b, 'zh-CN')), directories: [...directories].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b, 'zh-CN')) };
   }
-  async function start(action, notePath, copy = false, nodeTokens = [], folders = [], overwriteSyncedBlocks = false) {
+  async function start(action, notePath, copy = false, nodeTokens = [], folders = [], overwriteSyncedBlocks = false, pullConfirmationToken) {
     if (busy) throw new Error('已有同步任务正在运行。');
     if (!['connect', 'discover', 'import-selected', 'import', 'pull', 'push', 'push-folders', 'recover', 'recover-original'].includes(action)) throw new Error('同步操作无效。');
+    const pullConfirmation = pullConfirmationToken ? pullConfirmations.get(pullConfirmationToken) : undefined;
+    if (pullConfirmationToken !== undefined && (action !== 'pull' || !pullConfirmation || pullConfirmation.path !== notePath)) throw new Error('覆盖确认已失效，请重新拉取并确认。');
     if (action === 'import-selected' && (!Array.isArray(nodeTokens) || !nodeTokens.length || nodeTokens.length > 10000 || nodeTokens.some((token) => typeof token !== 'string' || !/^[a-zA-Z0-9]+$/.test(token)))) throw new Error('请勾选要拉取的笔记。');
     if (action === 'push-folders' && (!Array.isArray(folders) || !folders.length || folders.length > 1000 || folders.some((folder) => typeof folder !== 'string' || (folder !== '' && (path.isAbsolute(folder) || folder.includes('\\') || folder.split('/').some((part) => !part || part.startsWith('.') || part === 'node_modules' || part.endsWith('.assets'))))))) throw new Error('请选择知识库内要推送的文件夹。');
     busy = true;
@@ -810,7 +820,8 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
       await lock.writeFile(String(process.pid));
     } catch (error) { busy = false; throw new Error(error.code === 'EEXIST' ? '笔记目录已被其他同步进程锁定；若上次异常退出，请确认进程结束后移除 .zhixu-feishu/sync.lock。' : error.message); }
     job = { id: randomUUID(), action, path: notePath, folders, state: 'running', progress: '正在连接飞书…', results: [] };
-    void execute(action, notePath, copy, nodeTokens, folders, overwriteSyncedBlocks === true).then((results) => { job.results = results; job.state = results.some((result) => result.status === 'error' || result.status === 'conflict') ? 'attention' : 'done'; }, (error) => { job.state = 'error'; job.results = [{ status: 'error', message: error.message }]; }).finally(async () => {
+    if (pullConfirmationToken) pullConfirmations.delete(pullConfirmationToken);
+    void execute(action, notePath, copy, nodeTokens, folders, overwriteSyncedBlocks === true, pullConfirmation).then((results) => { job.results = results; job.state = results.some((result) => result.status === 'error' || result.status === 'conflict') ? 'attention' : 'done'; }, (error) => { job.state = 'error'; job.results = [{ status: 'error', message: error.message }]; }).finally(async () => {
       try { await lock.close(); await unlink(lockPath); }
       catch { job.state = 'attention'; job.results.push({ status: 'error', message: '无法释放同步锁，请检查 .zhixu-feishu/sync.lock。' }); }
       finally { busy = false; }

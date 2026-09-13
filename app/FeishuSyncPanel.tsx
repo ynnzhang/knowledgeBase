@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Cloud, X } from 'lucide-react';
 
-type Result = { status: string; path?: string; message: string; url?: string };
+type Result = { status: string; path?: string; message: string; url?: string; confirmationToken?: string };
 type PullCandidate = { nodeToken: string; title: string; path: string; url: string };
 type SyncStatus = {
   configured: boolean; appId: string; wikiUrl: string; environmentManaged: boolean; busy: boolean; error?: string;
@@ -40,6 +40,8 @@ export default function FeishuSyncPanel({ notePath, folders, notePaths, selected
   const [notice, setNotice] = useState('');
   const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
   const [selectedPushFolders, setSelectedPushFolders] = useState<string[]>([]);
+  const [pullChoices, setPullChoices] = useState<Result[]>([]);
+  const dismissedPullChoices = useRef(new Set<string>());
   const trigger = useRef<HTMLButtonElement>(null);
   function close() { setOpened(false); trigger.current?.focus(); }
 
@@ -51,6 +53,14 @@ export default function FeishuSyncPanel({ notePath, folders, notePaths, selected
         const data = await request(`status?${new URLSearchParams(notePath ? { path: notePath } : {})}`) as SyncStatus;
         if (!active) return;
         setStatus(data);
+        if (!data.busy && data.job) setPullChoices((previous) => {
+          const choices = new Map(previous.map((item) => [item.path, item]));
+          for (const result of data.job!.results) {
+            if (result.confirmationToken && !dismissedPullChoices.current.has(result.confirmationToken)) choices.set(result.path, result);
+            else if (result.path && ['ok', 'warning', 'unchanged'].includes(result.status)) choices.delete(result.path);
+          }
+          return [...choices.values()];
+        });
         onBusyChange(data.busy);
         if (first) { setAppId(data.appId); setWikiUrl(data.wikiUrl); first = false; }
       } catch (caught) { if (active) setError(caught instanceof Error ? caught.message : '无法连接飞书服务。'); }
@@ -69,7 +79,14 @@ export default function FeishuSyncPanel({ notePath, folders, notePaths, selected
     } catch (caught) { setError(caught instanceof Error ? caught.message : '配置保存失败。'); }
     finally { setPending(false); }
   }
-  async function start(action: string, copy = false, nodeTokens?: string[], pushFolders?: string[]) {
+  function dismissPullChoice(choice: Result) {
+    if (choice.confirmationToken) dismissedPullChoices.current.add(choice.confirmationToken);
+    setPullChoices((previous) => previous.filter((item) => item.confirmationToken !== choice.confirmationToken));
+  }
+  async function start(action: string, copy = false, nodeTokens?: string[], pushFolders?: string[], pullChoice?: Result) {
+    if (pullChoice && !window.confirm(`确认用飞书内容覆盖本地笔记？\n\n${pullChoice.path}\n\n本地正文将替换为飞书内容，本地元数据保留。覆盖前会备份本地和飞书内容，飞书原文不会改变。\n\n点击“取消”保留本地修改。`)) {
+      dismissPullChoice(pullChoice); setNotice('已保留本地修改。'); return;
+    }
     const overwrite = !copy && (action === 'push' || action === 'push-folders');
     if (overwrite) {
       const scope = action === 'push-folders'
@@ -81,7 +98,8 @@ export default function FeishuSyncPanel({ notePath, folders, notePaths, selected
     setPending(true); setError(''); setNotice('');
     if (action === 'discover') setSelectedTokens([]);
     try {
-      const result = await request<{ job: SyncStatus['job'] }>('jobs', { action, path: notePath, copy, nodeTokens, folders: pushFolders, overwriteSyncedBlocks: overwrite });
+      const result = await request<{ job: SyncStatus['job'] }>('jobs', { action, path: pullChoice?.path || notePath, copy, nodeTokens, folders: pushFolders, overwriteSyncedBlocks: overwrite, pullConfirmationToken: pullChoice?.confirmationToken });
+      if (pullChoice) dismissPullChoice(pullChoice);
       setStatus((current) => current ? { ...current, busy: true, job: result.job } : current);
       onBusyChange(true);
     } catch (caught) { setError(caught instanceof Error ? caught.message : '同步启动失败。'); }
@@ -193,10 +211,17 @@ export default function FeishuSyncPanel({ notePath, folders, notePaths, selected
         <div aria-live="polite">
           {(error || status?.error) && <p className="feishu-error">{error || status?.error}</p>}
           {notice && <p>{notice}</p>}
+          {!busy && pullChoices.map((choice) => <div className="feishu-note" key={choice.confirmationToken}>
+            <h3>拉取需要确认</h3><p>{choice.path}</p><p>{choice.message}</p>
+            <div className="feishu-buttons">
+              <button disabled={blocked || dirty} onClick={() => { dismissPullChoice(choice); setNotice('已保留本地修改。'); }}>保留本地</button>
+              <button disabled={blocked || dirty} onClick={() => void start('pull', false, undefined, undefined, choice)}>用飞书覆盖本地</button>
+            </div>
+          </div>)}
           {status?.busy && <p>{status.job?.total !== undefined && `已处理 ${status.job.completed || 0}/${status.job.total} 篇 · `}{status.job?.progress || '正在同步…'}</p>}
-          {status?.job && !status.busy && <div className="feishu-results">
+          {status?.job && !status.busy && status.job.results.some((result) => !result.confirmationToken) && <div className="feishu-results">
             <strong>{['error', 'attention'].includes(status.job.state) ? '同步需要处理' : '操作完成'}</strong>
-            {status.job.results.map((result, index) => <p key={index} className={['error', 'conflict'].includes(result.status) ? 'feishu-error' : ''}>{result.path && <span>{result.path}<br /></span>}{result.message}{result.url && <> <a href={result.url} target="_blank" rel="noreferrer">打开飞书</a></>}</p>)}
+            {status.job.results.filter((result) => !result.confirmationToken).map((result, index) => <p key={index} className={['error', 'conflict'].includes(result.status) ? 'feishu-error' : ''}>{result.path && <span>{result.path}<br /></span>}{result.message}{result.url && <> <a href={result.url} target="_blank" rel="noreferrer">打开飞书</a></>}</p>)}
           </div>}
         </div>
       </section>

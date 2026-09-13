@@ -120,8 +120,8 @@ async function setup(t) {
   const fake = new FakeFeishu();
   const service = createFeishuSync({ projectRoot: folder, notesRoot: notes, env: {}, clientFactory: () => fake });
   await service.saveConfig({ appId: 'cli_test', appSecret: 'test-secret', wikiUrl: 'https://my.feishu.cn/wiki/root' });
-  const run = async (action, notePath, copy = false, nodeTokens, folders, overwriteSyncedBlocks = false) => {
-    await service.start(action, notePath, copy, nodeTokens, folders, overwriteSyncedBlocks);
+  const run = async (action, notePath, copy = false, nodeTokens, folders, overwriteSyncedBlocks = false, pullConfirmationToken) => {
+    await service.start(action, notePath, copy, nodeTokens, folders, overwriteSyncedBlocks, pullConfirmationToken);
     for (let count = 0; count < 500 && service.busy; count++) await delay(5);
     assert.equal(service.busy, false);
     return (await service.status(notePath)).job;
@@ -263,6 +263,73 @@ test('import recursively, preserve YAML, pull remote updates, detect two-sided c
   const status = await service.status(filePath);
   assert.equal(JSON.stringify(status).includes('test-secret'), false);
   assert.ok((await readdir(path.join(notes, '.zhixu-feishu', 'backups'))).length >= 4);
+});
+
+test('confirmed pull replaces conflicting local body, preserving metadata and backups without remote writes', async (t) => {
+  const { notes, fake, service, run } = await setup(t);
+  await run('import');
+  const notePath = '飞书/技术提升/子页面.md';
+  const local = '---\ntitle: 自定义标题\ntags: [学习]\n---\n\n本地编辑';
+  await writeFile(path.join(notes, notePath), local);
+  fake.set('docChild', '远端编辑');
+  const result = (await run('pull', notePath)).results[0];
+  assert.equal(result.status, 'conflict'); assert.ok(result.confirmationToken);
+  assert.equal(await readFile(path.join(notes, notePath), 'utf8'), local);
+  await assert.rejects(service.start('pull', '飞书/技术提升.md', false, [], [], false, result.confirmationToken), /确认已失效/);
+  await assert.rejects(service.start('pull', notePath, false, [], [], false, true), /确认已失效/);
+  const confirmed = await run('pull', notePath, false, [], [], false, result.confirmationToken);
+  assert.equal(confirmed.state, 'done');
+  const after = await readFile(path.join(notes, notePath), 'utf8');
+  assert.match(after, /title: 自定义标题\ntags: \[学习\]/); assert.match(after, /远端编辑/); assert.doesNotMatch(after, /本地编辑/);
+  const backups = await Promise.all((await readdir(path.join(notes, '.zhixu-feishu/backups'))).map((name) => readFile(path.join(notes, '.zhixu-feishu/backups', name), 'utf8').then(JSON.parse)));
+  assert.ok(backups.some((item) => item.kind === 'pull' && item.local === local && item.remote.markdown.includes('远端编辑')));
+  assert.equal((await run('pull', notePath)).results[0].status, 'unchanged');
+  assert.equal(fake.mutations.length, 0);
+  await assert.rejects(service.start('pull', notePath, false, [], [], false, result.confirmationToken), /确认已失效/);
+});
+
+for (const changed of ['local', 'remote', 'frontmatter']) {
+  test(`confirmed pull requires a fresh choice when ${changed} changes after the prompt`, async (t) => {
+    const { notes, fake, run } = await setup(t);
+    await run('import');
+    const notePath = '飞书/技术提升/子页面.md', file = path.join(notes, notePath);
+    await writeFile(file, '---\ntitle: 标题\n---\n\n本地编辑');
+    fake.set('docChild', '远端编辑');
+    const token = (await run('pull', notePath)).results[0].confirmationToken;
+    if (changed === 'remote') fake.set('docChild', '远端再次编辑');
+    else if (changed === 'local') await writeFile(file, '本地再次编辑');
+    else await writeFile(file, '---\ntitle: 新标题\n---\n\n本地编辑');
+    const before = await readFile(file, 'utf8');
+    const stale = (await run('pull', notePath, false, [], [], false, token)).results[0];
+    assert.equal(stale.status, 'conflict'); assert.match(stale.message, /确认期间内容发生变化/);
+    assert.notEqual(stale.confirmationToken, token);
+    assert.equal(await readFile(file, 'utf8'), before);
+    assert.equal((await run('pull', notePath, false, [], [], false, stale.confirmationToken)).state, 'done');
+  });
+}
+
+test('batch import conflicts can be confirmed independently for each note', async (t) => {
+  const { notes, fake, run } = await setup(t);
+  await run('import');
+  for (const [notePath, doc] of [['飞书/技术提升.md', 'docRoot'], ['飞书/技术提升/子页面.md', 'docChild']]) {
+    await writeFile(path.join(notes, notePath), '本地改动'); fake.set(doc, '远端改动');
+  }
+  const conflicts = (await run('import')).results.filter((result) => result.confirmationToken);
+  assert.equal(conflicts.length, 2);
+  for (const result of conflicts) assert.equal((await run('pull', result.path, false, [], [], false, result.confirmationToken)).state, 'done');
+});
+
+test('confirmed pull still refuses incomplete remote snapshots and preserves local files', async (t) => {
+  const { notes, fake, run } = await setup(t);
+  await run('import');
+  const notePath = '飞书/技术提升/子页面.md', file = path.join(notes, notePath);
+  await writeFile(file, '本地改动'); fake.set('docChild', '远端改动');
+  const token = (await run('pull', notePath)).results[0].confirmationToken;
+  const snapshot = fake.snapshot.bind(fake);
+  fake.snapshot = async (id) => ({ ...await snapshot(id), incomplete: true });
+  const result = await run('pull', notePath, false, [], [], false, token);
+  assert.equal(result.state, 'error'); assert.match(result.results[0].message, /不完整/);
+  assert.equal(await readFile(file, 'utf8'), '本地改动');
 });
 
 test('snapshot reads latest without history permission and rejects concurrent edits', async () => {

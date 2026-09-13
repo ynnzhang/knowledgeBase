@@ -272,7 +272,7 @@ function startLocalApi() {
           const input = await readJsonBody(request);
           if (workspaceBusy || (expectedWorkspace && expectedWorkspace !== encodeURIComponent(notesRoot))) throw new Error('知识库目录正在切换或已变化，请刷新后重试。');
           if (localFiles.busy || localWrites) throw new Error('笔记正在保存或移动，请完成后同步。');
-          sendJson(response, 202, await feishu.start(input.action, input.path, input.copy === true, input.nodeTokens, input.folders, input.overwriteSyncedBlocks === true));
+          sendJson(response, 202, await feishu.start(input.action, input.path, input.copy === true, input.nodeTokens, input.folders, input.overwriteSyncedBlocks === true, input.pullConfirmationToken));
         } else sendJson(response, 404, { error: '未找到飞书接口。' });
       } catch (error) {
         sendJson(response, 400, { error: error.message || '飞书操作失败。' });
