@@ -36,11 +36,13 @@ import { cjkSyntax, cjkSerialization } from './markdown-syntax.mjs';
 import { tableToolsPlugin } from './TableTools';
 import { NoteCodeBlock } from './NoteCodeBlock';
 import { registerCodeFence } from './code-fence.mjs';
+import { registerHeadingShortcuts } from './heading-shortcuts.mjs';
 import { addComposerChild$, addNestedEditorChild$, addTableCellEditorChild$ } from '@mdxeditor/editor';
 
 function CodeFenceShortcut() {
   const [editor] = useLexicalComposerContext();
   useEffect(() => registerCodeFence(editor), [editor]);
+  useEffect(() => registerHeadingShortcuts(editor), [editor]);
   return null;
 }
 const codeFencePlugin = realmPlugin({

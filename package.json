@@ -23,7 +23,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "dev:preview": "vinext dev",
     "build:preview": "npm run notes:sync && vinext build",
-    "test:editor": "node --test scripts/code-fence.test.mjs",
+    "test:editor": "node --test scripts/code-fence.test.mjs scripts/heading-shortcuts.test.mjs",
     "test:production": "node --test scripts/production-supervisor.test.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:local && npm run test:feishu && npm run test:outline && npm run test:editor && npm run test:production",

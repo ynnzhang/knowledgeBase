@@ -90,8 +90,8 @@ function EditorContextMenu() {
     <button role="menuitem" onClick={() => format('strikethrough')}><Strikethrough size={16} /><span>删除线</span></button>
     <button role="menuitem" onClick={() => format('code')}><Code size={16} /><span>行内代码</span></button>
     <div className="context-menu-divider" role="separator" />
-    <button role="menuitem" onClick={() => block('paragraph')}><Pilcrow size={16} /><span>正文</span></button>
-    {[1, 2, 3, 4, 5, 6].map((level) => <button role="menuitem" key={level} onClick={() => block(`h${level}` as HeadingTagType)}><Heading size={16} /><span>{level} 级标题</span><small>H{level}</small></button>)}
+    <button role="menuitem" onClick={() => block('paragraph')}><Pilcrow size={16} /><span>正文</span><kbd>Ctrl/⌘ Alt 0</kbd></button>
+    {[1, 2, 3, 4, 5, 6].map((level) => <button role="menuitem" key={level} onClick={() => block(`h${level}` as HeadingTagType)}><Heading size={16} /><span>{level} 级标题</span><kbd>Ctrl/⌘ Alt {level}</kbd></button>)}
     <button role="menuitem" onClick={() => block('quote')}><Quote size={16} /><span>引用</span></button>
   </div>, document.body);
 }
