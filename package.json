@@ -26,7 +26,7 @@
     "test:editor": "node --test scripts/code-fence.test.mjs scripts/heading-shortcuts.test.mjs scripts/tree-window.test.mjs",
     "test:production": "node --test scripts/production-supervisor.test.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run test:local && npm run test:feishu && npm run test:outline && npm run test:editor && npm run test:production",
+    "test": "npm run test:local && npm run test:feishu && npm run test:outline && npm run test:folders && npm run test:editor && npm run test:production",
     "test:smoke": "node --test scripts/native-api.test.mjs",
     "dev:legacy": "concurrently --kill-others-on-fail --names notes,site --prefix-colors cyan,green \"npm:notes:watch\" \"npm:dev:site:legacy\"",
     "build:legacy": "next build --webpack",
@@ -35,7 +35,8 @@
     "test:native": "node --test scripts/native-api.test.mjs",
     "test:smoke:legacy": "node --test scripts/production-smoke.test.mjs",
     "dev:site:legacy": "next dev --webpack --hostname 127.0.0.1 --port 3000",
-    "prestart": "node scripts/start-local.mjs --prepare"
+    "prestart": "node scripts/start-local.mjs --prepare",
+    "test:folders": "node --experimental-strip-types --test scripts/folder-tree.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

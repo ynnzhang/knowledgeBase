@@ -545,3 +545,9 @@ button { color: inherit; }
   .top-navigation { gap: 6px; }
   .sidebar-collapsed .reader-panel { transform: translateX(0); }
 }
+
+/* Folder documents share the folder row and retain its existing toggle target. */
+.folder-row:has(.folder-document-marker) { grid-template-columns: 14px 18px minmax(0, 1fr) 13px; }
+.folder-document-marker { color: #8f959e; }
+.folder-row.selected-folder .folder-document-marker { color: var(--green); }
+.file-context-menu button:disabled { opacity: .45; cursor: not-allowed; }

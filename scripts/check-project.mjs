@@ -12,7 +12,7 @@ export const requiredProjectFiles = [
     'feishu-content', 'feishu-markdown', 'feishu-media',
   ].map((name) => `scripts/${name}.mjs`),
   ...[
-    'tree-window.mjs', 'page.tsx', 'layout.tsx', 'globals.css', 'MarkdownRichEditor.tsx',
+    'folder-tree.ts', 'tree-window.mjs', 'page.tsx', 'layout.tsx', 'globals.css', 'MarkdownRichEditor.tsx',
     'MarkdownRichEditorInner.tsx', 'EditorContextMenu.tsx', 'FeishuSyncPanel.tsx',
     'FileActions.tsx', 'FileRename.tsx', 'LocalFolderPicker.tsx', 'NoteOutline.tsx',
     'ReaderWidthControl.tsx', 'TagManager.tsx', 'local-workspace.ts',

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSPro
 import { parse as parseYaml } from 'yaml';
 import MarkdownRichEditor from './MarkdownRichEditor';
 import { treeWindow } from './tree-window.mjs';
+import { buildFolderTree, type FolderNode as TreeFolderNode } from './folder-tree';
 import NoteOutline from './NoteOutline';
 import FeishuSyncPanel from './FeishuSyncPanel';
 import TagManager from './TagManager';
@@ -69,12 +70,7 @@ type Note = RawNote & {
   wordCount: number;
 };
 
-type FolderNode = {
-  name: string;
-  path: string;
-  folders: Map<string, FolderNode>;
-  notes: Note[];
-};
+type FolderNode = TreeFolderNode<Note>;
 
 type NotesIndexPayload = {
   workspace?: string;
@@ -266,33 +262,6 @@ function MetadataInfo({ note }: { note: Note }) {
   );
 }
 
-function buildFolderTree(notes: Note[], folderPaths: string[]): FolderNode {
-  const root: FolderNode = { name: '知识库', path: '', folders: new Map(), notes: [] };
-
-  function ensureFolder(folderPath: string) {
-    const parts = folderPath.split('/').filter(Boolean);
-    let current = root;
-    for (const folderName of parts) {
-      const nextPath = current.path ? `${current.path}/${folderName}` : folderName;
-      if (!current.folders.has(folderName)) {
-        current.folders.set(folderName, { name: folderName, path: nextPath, folders: new Map(), notes: [] });
-      }
-      current = current.folders.get(folderName)!;
-    }
-    return current;
-  }
-
-  folderPaths.forEach(ensureFolder);
-
-  for (const note of notes) {
-    const parts = note.path.split('/').filter(Boolean);
-    const current = ensureFolder(parts.slice(0, -1).join('/'));
-    current.notes.push(note);
-  }
-
-  return root;
-}
-
 function FileTree({
   root,
   expanded,
@@ -312,7 +281,7 @@ function FileTree({
   selectedId?: string;
   selectedFolder: string;
   onToggle: (path: string) => void;
-  onSelect: (note: Note) => void;
+  onSelect: (note: Note, documentFolder?: string) => void;
   disabled: boolean;
   onMove: (source: string, kind: 'note' | 'folder', folder: string) => void;
   onRename: (source: string, kind: 'note' | 'folder', name: string) => Promise<void>;
@@ -322,10 +291,10 @@ function FileTree({
 }) {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
-  function renameHandlers(path: string, kind: 'note' | 'folder') {
+  function renameHandlers(path: string, kind: 'note' | 'folder', hasDocument = false) {
     return {
       onContextMenu(event: React.MouseEvent) {
-        if (disabled || !isLocalWorkspace()) return;
+        if (!hasDocument && (disabled || !isLocalWorkspace())) return;
         event.preventDefault(); event.stopPropagation();
         setRenameTarget({ path, kind, x: event.clientX, y: event.clientY });
       },
@@ -387,6 +356,7 @@ function FileTree({
     const observer = new ResizeObserver(update); observer.observe(scroll); update();
     return () => { observer.disconnect(); scroll.removeEventListener('scroll', update); };
   }, []);
+  const contextDocument = renameTarget?.kind === 'folder' ? rows.find((row) => row.folder?.path === renameTarget.path)?.folder?.document : undefined;
   const virtual = rows.length > 200;
   const window = treeWindow(rows.length, viewport.top, viewport.height);
   const start = virtual ? window.start : 0;
@@ -403,13 +373,13 @@ function FileTree({
   }
   return (
     <div ref={treeRef} className="file-tree" role="tree" aria-label="知识库文件夹和笔记" onKeyDown={navigateRows}>
-      {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} onDelete={onDelete} />}
+      {renameTarget && <FileRename key={`${renameTarget.path}:${renameTarget.x}:${renameTarget.y}`} target={renameTarget} onClose={() => setRenameTarget(null)} onRename={onRename} onDelete={onDelete} canMutate={!disabled && isLocalWorkspace()} onOpenDocument={contextDocument ? () => onSelect(contextDocument, renameTarget.path) : undefined} />}
       <div style={virtual ? { height: window.total, position: 'relative' } : undefined}>
         <div style={virtual ? { position: 'absolute', top: window.offset, left: 0, right: 0 } : undefined}>
           {visible.map(({ folder, note, depth }, index) => folder ? (
-            <button key={`folder-${folder.path}`} data-tree-row={start + index} role="treeitem" aria-level={depth + 1} aria-expanded={expanded.has(folder.path)} className={`folder-row ${selectedFolder === folder.path ? 'selected-folder' : ''} ${dropTarget === folder.path ? 'drop-target' : ''}`} draggable={!disabled} onDragStart={(event) => startDrag(event, folder.path, 'folder')} onDragEnd={endDrag} {...dropHandlers(folder.path)} {...renameHandlers(folder.path, 'folder')} title={`${folder.name} · 右键或 F2 重命名`} aria-selected={selectedFolder === folder.path} onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18, height: 38 }}>
+            <button key={`folder-${folder.path}`} data-tree-row={start + index} role="treeitem" aria-level={depth + 1} aria-expanded={expanded.has(folder.path)} className={`folder-row ${selectedFolder === folder.path || Boolean(folder.document && selectedId === folder.document.id) ? 'selected-folder' : ''} ${dropTarget === folder.path ? 'drop-target' : ''}`} draggable={!disabled} onDragStart={(event) => startDrag(event, folder.path, 'folder')} onDragEnd={endDrag} {...dropHandlers(folder.path)} {...renameHandlers(folder.path, 'folder', Boolean(folder.document))} title={`${folder.name} · ${folder.document ? '右键打开文件夹文档' : '右键或 F2 重命名'}`} aria-selected={selectedFolder === folder.path || Boolean(folder.document && selectedId === folder.document.id)} onClick={() => onToggle(folder.path)} style={{ paddingLeft: 10 + depth * 18, height: 38 }}>
               <ChevronDown className={expanded.has(folder.path) ? 'tree-chevron open' : 'tree-chevron'} size={14} />
-              {expanded.has(folder.path) ? <FolderOpen size={17} /> : <Folder size={17} />}<span>{folder.name}</span>
+              {expanded.has(folder.path) ? <FolderOpen size={17} /> : <Folder size={17} />}<span>{folder.name}</span>{folder.document && <FileText className="folder-document-marker" size={13} aria-label="含文件夹文档" />}
             </button>
           ) : note ? (
             <div key={note.id} className={selectedId === note.id ? 'file-row selected' : 'file-row'} style={{ height: 38 }}>
@@ -615,12 +585,10 @@ export default function Home() {
     return searchableNotes.filter(({ note, text }) => (!normalizedQuery || (nativeEngine ? searchPaths?.has(note.path) : text.includes(normalizedQuery))) && tagFilters.every((tag) => note.tags.includes(tag))).map(({ note }) => note);
   }, [searchableNotes, query, tagFilters, nativeEngine, searchPaths]);
 
-  const folderTree = useMemo(() => {
-    const visibleFolders = query.trim() || tagFilters.length
-      ? [...new Set(filteredNotes.flatMap((note) => { const parts = note.path.split('/').slice(0, -1); return parts.map((_, index) => parts.slice(0, index + 1).join('/')); }))]
-      : folderPaths;
-    return buildFolderTree(filteredNotes, visibleFolders);
-  }, [filteredNotes, folderPaths, query, tagFilters]);
+  const folderTree = useMemo(
+    () => buildFolderTree(notes, folderPaths, query.trim() || tagFilters.length ? new Set(filteredNotes.map((note) => note.id)) : undefined),
+    [notes, filteredNotes, folderPaths, query, tagFilters],
+  );
 
   const selectedNote =
     filteredNotes.find((note) => note.id === selectedId) ||
@@ -934,7 +902,10 @@ export default function Home() {
                 onRename={renameTreeItem}
                 onDelete={deleteTreeItem}
                 onToggle={toggleFolder}
-                onSelect={(note) => { setSelectedId(note.id); setSelectedFolder(note.path.split('/').slice(0, -1).join('/')); setMobileReaderOpen(true); }}
+                onSelect={(note, documentFolder) => {
+                  if (documentFolder && !filteredNotes.some((match) => match.id === note.id)) { setQuery(''); setTagFilters([]); }
+                  setSelectedId(note.id); setSelectedFolder(documentFolder ?? note.path.split('/').slice(0, -1).join('/')); setMobileReaderOpen(true);
+                }}
               />
               {!filteredNotes.length && (
                 <div className="empty-state">

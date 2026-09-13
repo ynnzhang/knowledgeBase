@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Pencil, Trash2, X } from 'lucide-react';
+import { FileText, Pencil, Trash2, X } from 'lucide-react';
 export type RenameTarget = { path: string; kind: 'note' | 'folder'; x: number; y: number; editing?: boolean };
-type Props = { target: RenameTarget; onClose: () => void; onRename: (path: string, kind: 'note' | 'folder', name: string) => Promise<void>; onDelete: (path: string) => Promise<void> };
+type Props = { canMutate?: boolean; onOpenDocument?: () => void; target: RenameTarget; onClose: () => void; onRename: (path: string, kind: 'note' | 'folder', name: string) => Promise<void>; onDelete: (path: string) => Promise<void> };
 
-export default function FileRename({ target, onClose, onRename, onDelete }: Props) {
+export default function FileRename({ target, onClose, onRename, onDelete, onOpenDocument, canMutate = true }: Props) {
   const [editing, setEditing] = useState(Boolean(target.editing));
   const [deleting, setDeleting] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
@@ -15,7 +15,7 @@ export default function FileRename({ target, onClose, onRename, onDelete }: Prop
     const element = menu.current!;
     element.style.left = `${Math.max(8, Math.min(target.x, window.innerWidth - element.offsetWidth - 8))}px`;
     element.style.top = `${Math.max(8, Math.min(target.y, window.innerHeight - element.offsetHeight - 8))}px`;
-    element.querySelector('button')?.focus({ preventScroll: true });
+    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
     const closeOutside = (event: PointerEvent) => { if (!element.contains(event.target as Node)) onClose(); };
     const closeOnScroll = () => onClose();
     document.addEventListener('pointerdown', closeOutside);
@@ -26,8 +26,9 @@ export default function FileRename({ target, onClose, onRename, onDelete }: Prop
   if (deleting) return <DeleteDialog target={target} onClose={onClose} onDelete={onDelete} />;
   if (editing) return <RenameDialog target={target} onClose={onClose} onRename={onRename} />;
   return createPortal(<div ref={menu} className="file-context-menu" role="menu" aria-label="文件操作" style={{ left: target.x, top: target.y }} onKeyDown={(event) => { if (event.key === 'Escape' || event.key === 'Tab') onClose(); }}>
-    <button role="menuitem" onClick={() => setEditing(true)}><Pencil size={14} />重命名<kbd>F2</kbd></button>
-    {target.kind === 'note' && <button role="menuitem" className="danger" onClick={() => setDeleting(true)}><Trash2 size={14} />删除</button>}
+    {target.kind === 'folder' && onOpenDocument && <button role="menuitem" onClick={() => { onOpenDocument(); onClose(); }}><FileText size={14} />打开文件夹文档</button>}
+    <button role="menuitem" disabled={!canMutate} onClick={() => setEditing(true)}><Pencil size={14} />重命名<kbd>F2</kbd></button>
+    {target.kind === 'note' && <button role="menuitem" className="danger" disabled={!canMutate} onClick={() => setDeleting(true)}><Trash2 size={14} />删除</button>}
   </div>, document.body);
 }
 
