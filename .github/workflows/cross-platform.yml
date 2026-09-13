@@ -1,6 +1,10 @@
-name: macOS and Windows
+name: Node 24 compatibility
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   verify:
@@ -8,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-        node: [22, 24]
+        node: [24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -21,4 +25,4 @@ jobs:
       - run: npm run test:feishu
       - run: npm run test:outline
       - run: npx tsc --noEmit
-      - run: npm run build
+      # Rust release builds and API checks run in verify.yml on all three OSes.

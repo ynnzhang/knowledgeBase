@@ -19,7 +19,7 @@ Rust 承担网站、正文读取/保存、图片、目录切换/系统选择器�
 
 ## 启动
 
-安装 Node.js 22.13+ 和 Rust stable；Windows 需要 MSVC C++ Build Tools，详见 [Rust 官方安装说明](https://rust-lang.org/tools/install/)。macOS 需要 Xcode Command Line Tools。
+安装 Node.js 22.13+ 和 Rust stable；Windows 需要 MSVC C++ Build Tools，详见 [Rust 官方安装说明](https://rust-lang.org/tools/install/)。macOS 需要 Xcode Command Line Tools。Linux 的文件夹选择器构建需要 `libwayland-dev` 和 `pkg-config`（Ubuntu 可通过 apt 安装），使用系统对话框还需要可用的桌面 portal。
 
 ```sh
 npm ci
@@ -46,7 +46,7 @@ CI 为 Windows / macOS / Linux 生成各平台的可执行文件及 `source.sha2
 - Markdown 文件是唯一正文来源。`.zhixu-native/index.sqlite*` 仅为可重建的本地缓存，包含可搜索正文，须像笔记一样保管；迁移电脑时可跳过 `.zhixu-native`。停止服务后删除其中的 `index.sqlite`、`index.sqlite-wal`、`index.sqlite-shm` 会触发重建，不删除笔记。
 - 初次建立索引读取正文；后续启动复用 SQLite 中的摘要与搜索数据，扫描元数据确认变化。单篇保存只读写该篇并更新对应索引行；外部修改通过文件事件触发检查，15 秒定期检查补偿遗漏事件。切换目录后重新挂接监听。
 - 索引更新在事务中完成，目录扫描失败不会发布半份新索引。运行期间目录断连或文件暂时不可读时保留上次完整目录与搜索数据，`/local-api/ready` 返回 503，恢复后重试。读取正文仍需原文件可访问；启动时原目录不可访问则明确失败。
-- 全部写请求串行处理，排队后再次校验浏览器绑定的知识库。正文使用 SHA-256 版本校验，过期保存返回 409 并保留浏览器输入。写入采用同目录临时文件、刷盘、原子替换；Windows 使用替换现有文件的系统接口。与飞书共享写锁，防止同步期间写入。
+- 全部写请求串行处理，排队后再次校验浏览器绑定的知识库。正文使用 SHA-256 版本校验，过期保存返回 409 并保留浏览器输入。写入采用同目录临时文件、刷盘、原子替换；Windows 使用替换现有文件的系统接口，遇到短暂文件占用时有限重试，重试前重新核对正文版本。与飞书共享写锁，防止同步期间写入。
 - 每个知识库有操作系统文件锁，阻止多个 Rust 进程同时打开。符号链接、私有目录和越界路径受保护。旧版 Node 服务与外部编辑器无法被这把 Rust 实例锁管理，因此不要同时运行新旧版本。
 - 后端最多接收 64 个 API 请求，超出返回 503 与 `Retry-After`。阻塞文件/数据库工作交给专门的阻塞任务池。只绑定回环地址，并校验 Host、Origin、知识库标识及请求体大小。
 - `npm start` 的启动器在进程退出后按 1/2/4/8/16 秒退避重启；预算耗尽后退出。启动宽限 120 秒，之后每 5 秒检查健康，连续 3 次失败终止并重启；连续健康 60 秒才重置预算。直接启动二进制没有这层监控。

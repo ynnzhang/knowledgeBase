@@ -28,6 +28,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
+      - name: Linux file dialog build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev pkg-config
       - run: npm ci
       - run: npm test
       - run: npm run typecheck

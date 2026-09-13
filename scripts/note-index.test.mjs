@@ -87,3 +87,15 @@ test('atomic replacement never exposes partially written JSON and cleans tempora
   await assert.rejects(atomicWrite(root, 'cannot replace a directory'));
   assert.deepEqual(await readdir(root), ['index.json']);
 });
+
+test('Windows replacement retries transient locks with a finite budget, never permanent errors', async () => {
+  const { replaceFile } = await import('./note-index.mjs');
+  let attempts = 0; const waits = [];
+  await replaceFile('temp', 'live', { platform: 'win32', move: async () => { if (++attempts < 4) throw Object.assign(new Error('locked'), { code: 'EPERM' }); }, pause: async (ms) => waits.push(ms) });
+  assert.equal(attempts, 4); assert.deepEqual(waits, [5, 10, 20]);
+  for (const [platform, code, expected] of [['win32', 'EPERM', 9], ['win32', 'ENOENT', 1], ['darwin', 'EPERM', 1]]) {
+    attempts = 0;
+    await assert.rejects(replaceFile('temp', 'live', { platform, move: async () => { attempts++; throw Object.assign(new Error(code), { code }); }, pause: async () => {} }), { code });
+    assert.equal(attempts, expected);
+  }
+});

@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, rename, realpath, lstat, open, unlink, readdir } from 'node:fs/promises';
+import { atomicWrite } from './note-index.mjs';
+import { mkdir, readFile, writeFile, realpath, lstat, open, unlink, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -161,9 +162,7 @@ export function createFeishuSync({ projectRoot, notesRoot, env = process.env, cl
     return current;
   }
   async function atomic(file, value) {
-    const temporary = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temporary, value, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, file);
+    await atomicWrite(file, value);
   }
   async function config() {
     let saved = {};

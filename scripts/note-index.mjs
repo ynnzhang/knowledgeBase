@@ -1,6 +1,19 @@
 import { lstat, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+
+// Windows readers and antivirus can briefly hold a handle that blocks replacement.
+// Retry the rename only; never unlink the published file or expose partial contents.
+export async function replaceFile(source, destination, { platform = process.platform, move = rename, pause = delay } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { await move(source, destination); return; }
+    catch (error) {
+      if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 8) throw error;
+      await pause(Math.min(5 * 2 ** attempt, 80));
+    }
+  }
+}
 
 export async function atomicWrite(file, content) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -10,7 +23,7 @@ export async function atomicWrite(file, content) {
     await handle.writeFile(content, 'utf8');
     await handle.sync();
     await handle.close(); handle = null;
-    await rename(temporary, file);
+    await replaceFile(temporary, file);
   } finally {
     await handle?.close();
     await unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; });

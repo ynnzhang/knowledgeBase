@@ -45,6 +45,9 @@ impl std::fmt::Display for Conflict {
 impl std::error::Error for Conflict {}
 
 pub fn atomic_write(file: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_checked(file, bytes, None)
+}
+fn atomic_write_checked(file: &Path, bytes: &[u8], expected: Option<&[u8]>) -> Result<()> {
     let parent = file.parent().context("文件没有父目录")?;
     let temp = parent.join(format!(".zhixu-{}.tmp", Uuid::new_v4()));
     let result = (|| -> Result<()> {
@@ -67,19 +70,36 @@ pub fn atomic_write(file: &Path, bytes: &[u8]) -> Result<()> {
             };
             let src: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
             let dst: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
-            if unsafe {
-                MoveFileExW(
-                    src.as_ptr(),
-                    dst.as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                )
-            } == 0
-            {
-                return Err(std::io::Error::last_os_error().into());
+            for attempt in 0..=8 {
+                if let Some(expected) = expected {
+                    if fs::read(file)?.as_slice() != expected {
+                        return Err(Conflict.into());
+                    }
+                }
+                if unsafe {
+                    MoveFileExW(
+                        src.as_ptr(),
+                        dst.as_ptr(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                    )
+                } != 0
+                {
+                    break;
+                }
+                let error = std::io::Error::last_os_error();
+                if attempt == 8 || !matches!(error.raw_os_error(), Some(5 | 32 | 33)) {
+                    return Err(error.into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis((5u64 << attempt).min(80)));
             }
         }
         #[cfg(not(windows))]
         {
+            if let Some(expected) = expected {
+                if fs::read(file)?.as_slice() != expected {
+                    return Err(Conflict.into());
+                }
+            }
             fs::rename(&temp, file)?;
             File::open(parent)?.sync_all()?;
         }
@@ -599,7 +619,7 @@ impl Vault {
         if fs::read_to_string(&file)? != raw {
             return Err(Conflict.into());
         }
-        atomic_write(&file, next.as_bytes())?;
+        atomic_write_checked(&file, next.as_bytes(), Some(raw.as_bytes()))?;
         let summary = self.refresh(relative)?;
         Ok(
             json!({"ok":true,"raw":next,"version":summary.version,"modified":summary.modified,"summary":summary}),

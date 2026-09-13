@@ -1,3 +1,4 @@
+import { replaceFile } from './note-index.mjs';
 import { stat, lstat, mkdir, readFile, readdir, rename, open, unlink, writeFile, copyFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -139,7 +140,7 @@ export function createLocalFiles({ notesRoot }) {
         written.push(change);
         const temp = `${file}.${randomUUID()}.tmp`;
         await writeFile(temp, change.next, { flag: 'wx' });
-        await rename(temp, file);
+        await replaceFile(temp, file);
       }
     } catch (error) {
       try { for (const change of written.reverse()) await writeFile(path.join(notesRoot, change.path), change.raw); }
@@ -175,7 +176,7 @@ export function createLocalFiles({ notesRoot }) {
       if (entries.length) {
         state.entries = state.entries.filter((entry) => entry.path !== source);
         await writeFile(temp, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
-        await rename(temp, stateFile);
+        await replaceFile(temp, stateFile);
       }
     } catch (error) {
       // Never overwrite a file recreated by another program during rollback.
@@ -288,7 +289,7 @@ export function createLocalFiles({ notesRoot }) {
         if (moveFolder) for (const directory of state.directories || []) directory.path = relocated(directory.path);
         const temp = `${stateFile}.${randomUUID()}.tmp`;
         await writeFile(temp, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
-        await rename(temp, stateFile);
+        await replaceFile(temp, stateFile);
       }
       return { path: destination, previousPath: source, backup };
     } catch (error) {
