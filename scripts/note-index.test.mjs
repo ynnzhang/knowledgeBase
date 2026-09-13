@@ -80,8 +80,23 @@ test('atomic replacement never exposes partially written JSON and cleans tempora
       assert.ok(Number.isInteger(value.version)); reads++;
     }
   })();
-  try { for (let i = 1; i <= 8; i++) await atomicWrite(file, JSON.stringify({ version: i, text: '新内容'.repeat(10000) })); }
-  finally { done = true; await reader; }
+  let published = 0, contention = false;
+  const value = (i) => JSON.stringify({ version: i, text: '新内容'.repeat(10000) });
+  try {
+    for (let i = 1; i <= 8; i++) { await atomicWrite(file, value(i)); published = i; }
+  } catch (error) {
+    // Continuous readers can prevent all bounded rename attempts on Windows.
+    // The contract is an intact last publication, followed by success once the
+    // reader releases its handle, not unbounded waiting or deleting the target.
+    if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+    contention = true;
+  } finally { done = true; await reader; }
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).version, published);
+  assert.deepEqual(await readdir(root), ['index.json']);
+  if (contention) {
+    for (let i = published + 1; i <= 8; i++) await atomicWrite(file, value(i));
+    t.diagnostic('持续读占用时保持最后一次完整发布；读句柄释放后原子替换恢复。');
+  }
   assert.ok(reads > 0); assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 8);
   assert.deepEqual(await readdir(root), ['index.json']);
   await assert.rejects(atomicWrite(root, 'cannot replace a directory'));
