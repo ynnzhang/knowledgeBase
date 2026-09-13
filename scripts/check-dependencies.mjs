@@ -19,7 +19,7 @@ export async function dependencyIssues(projectRoot, platform = process.platform)
       issues.push(`${name}（未安装或安装不完整）`);
     }
   }
-  for (const name of ['vinext', 'concurrently']) {
+  for (const name of ['next', 'vinext', 'concurrently']) {
     if (!declared[name]) continue;
     try { await access(path.join(projectRoot, 'node_modules', '.bin', `${name}${platform === 'win32' ? '.cmd' : ''}`)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; issues.push(`${name}（启动命令缺失）`); }

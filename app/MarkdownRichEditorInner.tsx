@@ -15,7 +15,6 @@ import {
   addSyntaxExtension$,
   addToMarkdownExtension$,
   codeBlockPlugin,
-  codeMirrorPlugin,
   headingsPlugin,
   type ImageNode,
   type MdastImportVisitor,
@@ -35,7 +34,18 @@ import { editorContextMenuPlugin } from './EditorContextMenu';
 import { cleanFeishuMarkdown } from './remark-clean-feishu';
 import { cjkSyntax, cjkSerialization } from './markdown-syntax.mjs';
 import { tableToolsPlugin } from './TableTools';
-import { NoteCodeBlock, noteCodeExtensions } from './NoteCodeBlock';
+import { NoteCodeBlock } from './NoteCodeBlock';
+import { registerCodeFence } from './code-fence.mjs';
+import { addComposerChild$, addNestedEditorChild$, addTableCellEditorChild$ } from '@mdxeditor/editor';
+
+function CodeFenceShortcut() {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => registerCodeFence(editor), [editor]);
+  return null;
+}
+const codeFencePlugin = realmPlugin({
+  init(realm) { realm.pubIn({ [addComposerChild$]: CodeFenceShortcut, [addNestedEditorChild$]: CodeFenceShortcut, [addTableCellEditorChild$]: CodeFenceShortcut }); },
+});
 
 const cjkMarkdownPlugin = realmPlugin({
   init(realm) { realm.pubIn({ [addSyntaxExtension$]: cjkSyntax, [addToMarkdownExtension$]: cjkSerialization }); },
@@ -258,26 +268,8 @@ export default function MarkdownRichEditorInner({ markdown, notePath, readOnly =
     cjkMarkdownPlugin(),
     thematicBreakPlugin(),
     codeBlockPlugin({ defaultCodeBlockLanguage: 'txt', codeBlockEditorDescriptors: [{ priority: 10, match: () => true, Editor: NoteCodeBlock }] }),
-    codeMirrorPlugin({
-      codeMirrorExtensions: noteCodeExtensions,
-      codeBlockLanguages: {
-        txt: '纯文本',
-        js: 'JavaScript',
-        ts: 'TypeScript',
-        jsx: 'JSX',
-        tsx: 'TSX',
-        css: 'CSS',
-        html: 'HTML',
-        json: 'JSON',
-        python: 'Python',
-        bash: 'Shell',
-        java: 'Java',
-        sql: 'SQL',
-        xml: 'XML',
-        yaml: 'YAML',
-      },
-    }),
     markdownShortcutPlugin(),
+    codeFencePlugin(),
   ], [notePath]);
 
   if (sourceFallback) return <div className="editor-source-fallback">

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -80,6 +81,7 @@ test('cross-platform local workflow: env file, sync, watch, save, recovery and W
   const status = await (await fetch(`${base}/health`)).json();
   assert.equal(status.notesRoot, vault);
   assert.equal(status.service, 'zhixu-notes');
+  assert.equal((await fetch(`${base}/ready`)).status, 200);
   const index = () => readFile(path.join(fixture, 'public', 'notes-index.json'), 'utf8').then(JSON.parse);
   assert.equal((await index()).notes[0].path, notePath);
   const initialIndex = await fetch(`${base}/index`);
@@ -105,6 +107,22 @@ test('cross-platform local workflow: env file, sync, watch, save, recovery and W
   assert.notEqual(refreshedIndex.headers.get('etag'), initialEtag);
   assert.match((await refreshedIndex.json()).notes[0].raw, /本地保存成功/);
   await assert.rejects(readFile(path.join(fixture, 'public/note-assets/分类/测试.assets/图片.png')), { code: 'ENOENT' });
+  // Hold the first request body open to exercise an actual overlap, rather
+  // than relying on two tiny saves happening to collide on a fast machine.
+  let slow;
+  const slowSave = new Promise((resolve, reject) => {
+    slow = httpRequest(`${base}/notes/content`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (response) => {
+      response.resume(); response.on('end', () => resolve(response.statusCode));
+    });
+    slow.on('error', reject);
+    slow.write('{');
+  });
+  await waitFor(async () => (await (await fetch(`${base}/health`)).json()).pendingWrites === 1);
+  const collision = await fetch(`${base}/notes/content`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: notePath, body: 'must not overwrite' }) });
+  assert.equal(collision.status, 409);
+  slow.end(JSON.stringify({ path: notePath, body: '# 更新\n\n本地保存成功' }).slice(1));
+  assert.equal(await slowSave, 200);
+  assert.doesNotMatch(await readFile(path.join(vault, notePath), 'utf8'), /must not overwrite/);
   const upload = await fetch(`${base}/notes/images?${new URLSearchParams({ notePath })}`, {
     method: 'POST', headers: { 'Content-Type': 'image/png' }, body: png,
   });
@@ -193,6 +211,7 @@ test('cross-platform local workflow: env file, sync, watch, save, recovery and W
   await waitFor(async () => Boolean((await index()).error), 200);
   assert.deepEqual((await index()).notes, previousNotes);
   assert.equal((await fetch(`${base}/health`)).status, 200);
+  assert.equal((await fetch(`${base}/ready`)).status, 503);
   const outageExit = once(child, 'exit');
   child.kill('SIGTERM'); await outageExit;
   child = spawn(process.execPath, [path.join(fixture, 'scripts', 'sync-notes.mjs'), '--watch'], { env, cwd: tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -204,6 +223,7 @@ test('cross-platform local workflow: env file, sync, watch, save, recovery and W
   assert.deepEqual(offlineSnapshot.notes, previousNotes);
   await rename(`${secondVault}.offline`, secondVault);
   await waitFor(async () => !(await index()).error, 200);
+  assert.equal((await fetch(`${base}/ready`)).status, 200);
   assert.deepEqual((await index()).notes, previousNotes);
   const exited = once(child, 'exit');
   child.kill('SIGTERM');

@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { cloudBindings } from '@/server/cloud-bindings';
 
 const IMAGE_EXTENSIONS = new Map([
   ['image/png', '.png'],
@@ -10,13 +10,15 @@ const IMAGE_EXTENSIONS = new Map([
 ]);
 
 function bucket() {
-  return (env as unknown as { ASSETS: R2Bucket }).ASSETS;
+  return cloudBindings().ASSETS;
 }
 
 export async function GET(request: Request) {
   const key = new URL(request.url).searchParams.get('key');
   if (!key) return Response.json({ error: '缺少图片标识。' }, { status: 400 });
-  const object = await bucket().get(key);
+  const storage = bucket();
+  if (!storage) return Response.json({ error: '当前为本地运行，请使用本地图片接口。' }, { status: 503 });
+  const object = await storage.get(key);
   if (!object) return Response.json({ error: '图片不存在。' }, { status: 404 });
 
   const headers = new Headers();
@@ -41,7 +43,9 @@ export async function POST(request: Request) {
     const notePath = new URL(request.url).searchParams.get('notePath') || 'note.md';
     const safeNotePath = notePath.replaceAll('\\', '/').replace(/[^a-zA-Z0-9._/-]+/g, '-').replace(/\.md(?:own)?$/i, '');
     const key = `notes/${safeNotePath}/${crypto.randomUUID()}${extension}`;
-    await bucket().put(key, content, { httpMetadata: { contentType } });
+    const storage = bucket();
+    if (!storage) return Response.json({ error: '当前为本地运行，请使用本地图片接口。' }, { status: 503 });
+    await storage.put(key, content, { httpMetadata: { contentType } });
     return Response.json({ url: `/api/note-images?key=${encodeURIComponent(key)}` });
   } catch (error) {
     return Response.json(

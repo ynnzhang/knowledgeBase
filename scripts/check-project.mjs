@@ -5,9 +5,9 @@ import path from 'node:path';
 // so an incomplete copy can be diagnosed before installation or service startup.
 export const requiredProjectFiles = [
   'package.json', 'package-lock.json', 'vite.config.ts', 'next.config.ts',
-  'tsconfig.json', '.openai/hosting.json',
+  'tsconfig.json', '.openai/hosting.json', 'postcss.config.mjs', 'server/cloud-bindings.ts', 'server/cloud-bindings.cloudflare.ts',
   ...[
-    'start-local', 'check-project', 'check-dependencies', 'sync-notes', 'local-config', 'local-platform',
+    'start-local', 'start-production', 'production-supervisor', 'check-project', 'check-dependencies', 'sync-notes', 'local-config', 'local-platform',
     'local-workspace', 'local-files', 'note-tags', 'note-index', 'feishu-sync',
     'feishu-content', 'feishu-markdown', 'feishu-media',
   ].map((name) => `scripts/${name}.mjs`),
@@ -16,7 +16,7 @@ export const requiredProjectFiles = [
     'MarkdownRichEditorInner.tsx', 'EditorContextMenu.tsx', 'FeishuSyncPanel.tsx',
     'FileActions.tsx', 'FileRename.tsx', 'LocalFolderPicker.tsx', 'NoteOutline.tsx',
     'ReaderWidthControl.tsx', 'TagManager.tsx', 'local-workspace.ts',
-    'note-outline.ts', 'note-images.ts', 'remark-clean-feishu.ts', 'markdown-syntax.mjs', 'TableTools.tsx', 'NoteCodeBlock.tsx',
+    'note-outline.ts', 'note-images.ts', 'code-fence.mjs', 'api/health/route.ts', 'remark-clean-feishu.ts', 'markdown-syntax.mjs', 'TableTools.tsx', 'NoteCodeBlock.tsx',
     'api/note-overrides/route.ts', 'api/note-images/route.ts',
   ].map((name) => `app/${name}`),
   'db/schema.ts',

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
@@ -46,6 +47,7 @@ export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin');
 
   return {
+    resolve: { alias: { '@/server/cloud-bindings': path.resolve('server/cloud-bindings.cloudflare.ts') } },
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
       host: 'localhost',

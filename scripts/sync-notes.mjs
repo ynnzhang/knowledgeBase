@@ -22,6 +22,8 @@ let watchTimer;
 let feishu = createFeishuSync({ projectRoot, notesRoot });
 let localFiles = createLocalFiles({ notesRoot });
 let localWrites = 0;
+let draining = false;
+let activeRequests = 0;
 const imageTypes = new Map([
   ['image/png', '.png'],
   ['image/jpeg', '.jpg'],
@@ -180,6 +182,7 @@ function sendJson(response, status, value) {
 }
 
 function scheduleSync() {
+  if (draining) return;
   clearTimeout(watchTimer);
   watchTimer = setTimeout(() => {
     if (localFiles.busy || workspaceBusy || feishu.busy || localWrites) { scheduleSync(); return; }
@@ -298,8 +301,14 @@ function startLocalApi() {
       return;
     }
 
+    if (request.method === 'GET' && requestUrl.pathname === '/ready') {
+      const ready = !draining && Boolean(indexBody) && !indexPayload?.error;
+      sendJson(response, ready ? 200 : 503, { ok: ready, service: 'zhixu-notes', state: draining ? 'draining' : ready ? 'ready' : 'degraded' });
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/health') {
-      sendJson(response, 200, { ok: true, service: 'zhixu-notes', projectRoot, notesRoot });
+      sendJson(response, 200, { ok: true, service: 'zhixu-notes', projectRoot, notesRoot, uptime: Math.floor(process.uptime()), activeRequests, pendingWrites: localWrites });
       return;
     }
 
@@ -324,7 +333,7 @@ function startLocalApi() {
     }
 
     if (request.method === 'POST' && requestUrl.pathname === '/notes/images') {
-      if (localFiles.busy || feishu.busy) { sendJson(response, 409, { error: '笔记正在同步或移动，请稍后上传图片。' }); return; }
+      if (localFiles.busy || feishu.busy || localWrites) { sendJson(response, 409, { error: '笔记正在同步或移动，请稍后上传图片。' }); return; }
       localWrites++;
       try {
         const notePath = requestUrl.searchParams.get('notePath');
@@ -353,7 +362,7 @@ function startLocalApi() {
       return;
     }
 
-    if (localFiles.busy || feishu.busy) { sendJson(response, 409, { error: '笔记正在同步或移动，请稍后保存。' }); return; }
+    if (localFiles.busy || feishu.busy || localWrites) { sendJson(response, 409, { error: '笔记正在同步或移动，请稍后保存。' }); return; }
     localWrites++;
     try {
       const input = await readJsonBody(request);
@@ -378,11 +387,17 @@ function startLocalApi() {
     } finally { localWrites--; }
   };
   const server = createServer((request, response) => {
+    if (draining || activeRequests >= 64) {
+      response.setHeader('Retry-After', '1');
+      sendJson(response, 503, { error: '服务繁忙或正在停止，请稍后重试。' });
+      return;
+    }
+    activeRequests++;
     void handleRequest(request, response).catch((error) => {
       console.error(`[notes] 请求处理失败：${error.message}`);
       if (!response.headersSent) sendJson(response, 500, { error: '本地服务暂时无法完成请求，请稍后重试。' });
       else response.destroy();
-    });
+    }).finally(() => { activeRequests--; });
   });
   server.headersTimeout = 15_000;
   server.requestTimeout = 30_000;
@@ -411,7 +426,14 @@ if (watchMode) {
   // Reconcile missed OS file events and recover disconnected/renamed folders.
   const recoveryTimer = setInterval(() => { restoreWatcher(); scheduleSync(); }, 15_000);
   console.log(`[notes] 正在监视 ${notesRoot}`);
-  const close = () => { clearInterval(recoveryTimer); clearTimeout(watchTimer); watcher?.close(); apiServer.close(); };
+  const close = () => {
+    if (draining) return;
+    draining = true;
+    clearInterval(recoveryTimer); clearTimeout(watchTimer); watcher?.close();
+    apiServer.close(() => { if (process.connected) process.disconnect(); });
+    apiServer.closeIdleConnections();
+  };
+  process.on('message', (message) => { if (message === 'shutdown') close(); });
   process.on('SIGINT', close);
   process.on('SIGTERM', close);
 } else if (!initialSyncSucceeded) process.exitCode = 1;

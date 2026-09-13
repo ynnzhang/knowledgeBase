@@ -266,13 +266,13 @@ button { color: inherit; }
 .zhixu-rich-content table > tbody > tr > :is(th, td):not([data-tool-cell]) { border: 1px solid #dfe3e8; padding: 10px 14px; vertical-align: top; overflow-wrap: anywhere; }
 .zhixu-rich-content table > tbody > tr > th:not([data-tool-cell]) { background: #f5f7fa; color: #242c38; font-weight: 650; }
 .zhixu-rich-content table > tbody > tr > :is(th, td):not([data-tool-cell]) p { margin: 0; }
-.zhixu-rich-content [data-table-tools] { display: flex; flex-direction: column; max-width: 100%; overflow-x: auto; margin: 20px 0; }
-.note-table-toolbar { order: -1; display: flex; justify-content: flex-end; position: sticky; left: 0; padding-bottom: 6px; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+.zhixu-rich-content [data-table-tools] { display: flex; flex-direction: column; max-width: 100%; overflow-x: auto; margin: 10px 0; }
+.note-table-toolbar { order: -1; display: flex; justify-content: flex-end; position: sticky; left: 0; height: 0; z-index: 3; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
 .zhixu-rich-content [data-table-tools]:hover > .note-table-toolbar,
 .zhixu-rich-content [data-table-tools]:focus-within > .note-table-toolbar,
 .zhixu-rich-content [data-table-tools="open"] > .note-table-toolbar { opacity: 1; pointer-events: auto; }
 @media (hover: none) { .note-table-toolbar { opacity: 1; pointer-events: auto; } }
-.note-table-toolbar button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.note-table-toolbar button { position: absolute; top: 4px; right: 4px; box-shadow: 0 2px 8px #1f232914; display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 0; border-radius: 4px; background: #fff; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .note-table-toolbar button:hover, .note-table-toolbar button[aria-expanded="true"] { background: var(--green-soft); color: var(--green); }
 .note-table-toolbar button:focus-visible { outline: 2px solid #769cee; outline-offset: 2px; }
 .zhixu-rich-content [data-table-tools="open"] > table [data-tool-cell] button { opacity: .75; }
@@ -281,17 +281,20 @@ button { color: inherit; }
 .zhixu-rich-content div:not([data-table-tools="open"]) > table:has(> thead [data-tool-cell]) > :is(thead, tfoot),
 .zhixu-rich-content div:not([data-table-tools="open"]) > table [data-tool-cell],
 .zhixu-rich-content div:not([data-table-tools="open"]) > table:has(> thead [data-tool-cell]) > colgroup > col:is(:first-child, :last-child) { display: none; }
-.note-code-block { position: relative; margin: 22px 0; border: 1px solid #263246; border-radius: 10px; overflow: hidden; background: #17202e; box-shadow: 0 4px 16px #18233712; }
-.note-code-block [class*="_codeMirrorWrapper_"] { border: 0; border-radius: 0; padding: 0; margin: 0; background: #17202e; }
-.note-code-block [class*="_codeMirrorToolbar_"] { position: relative; justify-content: space-between; align-items: center; min-height: 42px; padding: 6px 88px 6px 12px; border-bottom: 1px solid #2b3648; border-radius: 0; background: #1e293a; color: #c8d5e7; }
-.note-code-block [class*="_codeMirrorToolbar_"] button { color: #c8d5e7; background: transparent; }
-.note-code-block [class*="_codeMirrorToolbar_"] button:hover { background: #334155; }
-.note-code-copy { position: absolute; top: 8px; right: 10px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #3b4b62; border-radius: 5px; background: #263449; color: #dce5f2; font: inherit; font-size: 12px; cursor: pointer; z-index: 2; }
-.note-code-copy:hover { background: #344861; }
-.note-code-copy:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
-.note-code-block footer { display: flex; justify-content: space-between; gap: 12px; padding: 6px 14px; border-top: 1px solid #293548; color: #92a2b8; font-size: 11px; line-height: 1.5; }
-.note-code-preview-language { min-height: 42px; padding: 8px 100px 8px 14px; border-bottom: 1px solid #2b3648; background: #1e293a; color: #c8d5e7; font-size: 12px; }
-.note-code-block .note-code-preview { max-height: 520px; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; color: #dce5f2; background: #17202e; font: 13px/1.75 "SFMono-Regular", Consolas, monospace; }
+/* Code blocks share the document surface and keep controls out of the text. */
+.note-code-block { position: relative; margin: 16px 0; border: 1px solid #e8eaed; border-radius: 8px; overflow: hidden; background: #f5f6f7; }
+.note-code-block:focus-within { border-color: #b4c9f3; }
+.note-code-header { display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 10px 0 14px; }
+.note-code-header select { max-width: 60%; padding: 3px 20px 3px 2px; border: 0; border-radius: 4px; background: transparent; color: #646a73; font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor: pointer; }
+.note-code-header select:disabled { opacity: 1; cursor: default; }
+.note-code-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .15s ease; }
+.note-code-block:hover .note-code-actions, .note-code-block:focus-within .note-code-actions { opacity: 1; }
+.note-code-actions button { display: grid; place-items: center; width: 28px; height: 26px; border: 0; border-radius: 4px; background: transparent; color: #646a73; cursor: pointer; }
+.note-code-actions button:hover, .note-code-actions button[aria-pressed="true"] { background: #e4e7eb; color: #3370ff; }
+.note-code-header :is(button, select):focus-visible { outline: 2px solid #3370ff; outline-offset: 1px; }
+.note-code-block .note-code-preview { max-height: 560px; margin: 0; padding: 10px 18px 14px 50px; overflow: auto; white-space: pre; color: #1f2329; background: transparent; font: 13px/1.7 "SFMono-Regular", Consolas, monospace; }
+.note-code-error { display: block; padding: 4px 14px 8px; font-size: 12px; color: #c44747; }
+@media (hover: none) { .note-code-actions { opacity: 1; } }
 .zhixu-rich-content [data-editor-block-type="image"] { width: fit-content; max-width: 100%; display: block; margin-inline: auto; }
 .zhixu-rich-content [data-editor-block-type="image"] > div { max-width: 100%; }
 .zhixu-rich-content img { max-width: 100%; height: auto; display: block; margin: 22px auto; border-radius: 4px; object-fit: contain; box-shadow: none; transition: width .12s ease; }

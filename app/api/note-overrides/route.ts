@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { cloudBindings } from '@/server/cloud-bindings';
 import { NOTE_OVERRIDES_SCHEMA } from '../../../db/schema';
 
 type NoteOverrideRow = {
@@ -8,7 +8,7 @@ type NoteOverrideRow = {
 };
 
 function database() {
-  return (env as unknown as { DB: D1Database }).DB;
+  return cloudBindings().DB;
 }
 
 async function ensureSchema(db: D1Database) {
@@ -18,6 +18,7 @@ async function ensureSchema(db: D1Database) {
 export async function GET() {
   try {
     const db = database();
+    if (!db) return Response.json({ error: '当前为本地运行，请使用本地知识库接口。' }, { status: 503 });
     await ensureSchema(db);
     const result = await db
       .prepare('SELECT path, raw, updated_at FROM note_overrides ORDER BY path')
@@ -41,6 +42,7 @@ export async function POST(request: Request) {
     }
 
     const db = database();
+    if (!db) return Response.json({ error: '当前为本地运行，请使用本地知识库接口。' }, { status: 503 });
     await ensureSchema(db);
     const modified = new Date().toISOString();
     await db
