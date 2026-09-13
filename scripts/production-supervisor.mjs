@@ -65,6 +65,9 @@ export function supervise(services, { cwd, env = process.env, maxRestarts = 5, b
       } catch {
         state.healthySince = 0;
         if (++state.failures >= 3 && !stopping && !ended) {
+          // taskkill returns before the Windows process exits. Stop probing
+          // this generation so we don't repeatedly launch termination requests.
+          clearInterval(state.probeTimer);
           emit('unresponsive', state);
           stopProcessTree(child.pid);
         }
